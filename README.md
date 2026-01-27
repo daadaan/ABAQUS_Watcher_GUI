@@ -34,7 +34,7 @@ Before running the script, ensure you have the following installed on your works
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/daadaan/ABAQUS_watcher_project.git](https://github.com/daadaan/ABAQUS_watcher_project.git)
+    git clone https://github.com/daadaan/ABAQUS_watcher_project.git
     cd ABAQUS_watcher_project
     ```
 

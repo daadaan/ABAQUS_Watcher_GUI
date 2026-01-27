@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # ================= CONFIGURATION =================
 # IMPORT SECRETS
 # This pulls variables from secrets.py
-from secrets import BOT_TOKEN, CHAT_ID, WATCH_DIR, HEARTBEAT_INTERVAL
+from secrets import BOT_TOKEN, CHAT_ID, WATCH_DIR, HEARTBEAT_INTERVAL 
 # =================================================
 
 print(f"--- Abaqus Multi-Job Watchman Active ---")
@@ -88,7 +88,7 @@ def get_detailed_progress(job_name):
                     ke_val = parts[6]
                     te_val = parts[7]
                     
-                    data_info = f"Time: {time_val}s | dt: {dt_val}\nKE: {ke_val} | TE: {te_val}"
+                    data_info = f"Time: {time_val}s | dt: {dt_val}\nKE: {ke_val} | TE: {te_val} "
                     found_data = True
 
                 # Frame Info

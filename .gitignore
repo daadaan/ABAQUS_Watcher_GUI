@@ -8,3 +8,6 @@ secrets.py
 # Ignore the log/plot files if they are generated here
 *.png
 *.log
+
+# Ignore the GUI config file
+app_config.json
