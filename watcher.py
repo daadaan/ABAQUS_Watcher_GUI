@@ -86,8 +86,9 @@ def get_detailed_progress(job_name):
                     time_val = parts[1]
                     dt_val = parts[4]  # <--- NEW: Stable Increment
                     ke_val = parts[6]
+                    te_val = parts[7]
                     
-                    data_info = f"Time: {time_val}s | dt: {dt_val} | KE: {ke_val}"
+                    data_info = f"Time: {time_val}s | dt: {dt_val}\nKE: {ke_val} | TE: {te_val}"
                     found_data = True
 
                 # Frame Info
