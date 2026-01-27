@@ -1,10 +1,10 @@
-# Abaqus Watcher Bot 🏗️
+# Abaqus Watcher Bot
 
 A Python-based monitoring tool for SIMULIA Abaqus jobs. This script watches your Abaqus working directory, parses status files (`.sta`, `.msg`), and sends real-time updates, convergence plots, and error alerts to your Telegram.
 
 It supports **remote control**, allowing you to check status or terminate jobs directly from your phone.
 
-## 🚀 Features
+## Features
 
 * **Real-time Notifications:** Alerts for Job Start, Completion (Success), and Aborts (Error).
 * **Convergence Plotting:** Auto-generates and sends a **convergence graph** (Step Time vs. Increment Size) whenever you check a specific job status.
@@ -16,7 +16,7 @@ It supports **remote control**, allowing you to check status or terminate jobs d
     * `/kill JobName` - Remotely terminates a runaway job.
 * **Multi-Solver Support:** Automatically detects Abaqus/Standard vs. Abaqus/Explicit.
 
-## 🛠️ Prerequisites
+## Prerequisites
 
 Before running the script, ensure you have the following installed on your workstation:
 
@@ -30,7 +30,7 @@ Before running the script, ensure you have the following installed on your works
 3.  **Abaqus:** Must be installed and running on the host machine (the script looks for `.lck` and `.sta` files).
 4.  **Telegram App:** Installed on your phone to receive notifications.
 
-## 📦 Installation
+## Installation
 
 1.  **Clone the repository:**
     ```bash
@@ -43,7 +43,7 @@ Before running the script, ensure you have the following installed on your works
     pip install requests matplotlib
     ```
 
-## 🔐 Configuration (Important)
+## Configuration (Important)
 
 This project uses a **secrets file** to keep your Telegram credentials safe. This file is ignored by Git, so you must create it manually.
 
@@ -66,7 +66,7 @@ This project uses a **secrets file** to keep your Telegram credentials safe. Thi
     HEARTBEAT_INTERVAL = 3600
     ```
 
-## 🏃‍♂️ Usage
+## Usage
 
 1.  Open your terminal or command prompt.
 2.  Run the watcher script:
@@ -76,20 +76,20 @@ This project uses a **secrets file** to keep your Telegram credentials safe. Thi
 3.  **That's it!** The script will print `--- Abaqus Multi-Job Watchman Active ---`.
 4.  Submit an Abaqus job normally. You will receive a Telegram notification within 3 seconds.
 
-## 📱 Telegram Commands
+## Telegram Commands
 
 | Command | Usage | Description |
 | :--- | :--- | :--- |
 | **Status (All)** | `/status all` | Text summary of **all** currently running jobs. Useful for a quick overview. |
-| **Status (Job)** | `/status Job-1` | Generates and sends a **Convergence Plot** 📉 along with detailed info (Step, Time, Kinetic Energy) for `Job-1`. |
+| **Status (Job)** | `/status Job-1` | Generates and sends a **Convergence Plot** along with detailed info (Step, Time, Kinetic Energy) for `Job-1`. |
 | **Kill** | `/kill Job-1` | Terminates `Job-1` immediately. |
 
-## ⚠️ Notes for Multi-Workstation Use
+## Notes for Multi-Workstation Use
 
 If you plan to run this on multiple computers (e.g., Laptop and Lab Workstation):
 * **Do not use the same Bot Token.**
 * Create a separate Bot for each computer (e.g., `@MyLabBot` and `@MyLaptopBot`).
 * This prevents the "Update Lottery" where one computer "steals" the command meant for the other.
 
-## 📄 License
+## License
 Private / Personal Use.
