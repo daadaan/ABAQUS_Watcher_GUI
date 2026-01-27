@@ -29,7 +29,7 @@ This application is written in Python and runs on **Windows, Linux, and macOS**.
 ### Installation Steps
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/daadaan/ABAQUS_watcher_project.git
+    git clone https://github.com/daadaan/ABAQUS_Watcher_GUI.git
     cd ABAQUS_watcher_project
     ```
 2.  **Install dependencies:**
@@ -43,7 +43,7 @@ This application is written in Python and runs on **Windows, Linux, and macOS**.
 
 ### Bonus for Windows Users
 For Windows users who prefer not to manage Python environments, a pre-compiled `.exe` is available.
-1.  Go to the [**Releases Page**](https://github.com/daadaan/ABAQUS_watcher_project/releases).
+1.  Go to the [**Releases Page**](https://github.com/daadaan/ABAQUS_Watcher_GUI/releases).
 2.  Download `ABAQUSWatcherGUI_vX.X.X.exe`.
 3.  Double-click to run. No installation required.
 
@@ -59,7 +59,7 @@ When you first run the `.exe`, **Microsoft SmartScreen** may display a warning l
 The executable is not code-signed with a paid certificate (which costs hundreds of dollars per year). This is common for open-source and personal projects.
 
 **Is it safe?**  
-✅ **Yes.** The `.exe` is built automatically by [GitHub Actions](https://github.com/daadaan/ABAQUS_watcher_project/actions) directly from the Python source code in this repository. You can verify this yourself:
+✅ **Yes.** The `.exe` is built automatically by [GitHub Actions](https://github.com/daadaan/ABAQUS_Watcher_GUI/actions) directly from the Python source code in this repository. You can verify this yourself:
 - View the [build workflow](.github/workflows/) to see exactly how the executable is generated.
 - Inspect the [source code](abaqus_watcher_gui.py) – it's fully open and transparent.
 

@@ -18,7 +18,7 @@ Dependencies:
 
 Author: Souvik Biswas
 License: MIT
-Repository: https://github.com/daadaan/ABAQUS_watcher_project
+Repository: https://github.com/daadaan/ABAQUS_Watcher_GUI
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ import matplotlib.pyplot as plt
 # ================= CONFIGURATION =================
 CONFIG_FILE = "abaqus_watcher_config.json"
 APP_NAME = "ABAQUS Watcher GUI"
-GITHUB_REPO = "daadaan/ABAQUS_watcher_project"  # GitHub API Endpoint for updates
+GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
 CURRENT_VERSION = "1.0.0"
 
 # Performance Constants
