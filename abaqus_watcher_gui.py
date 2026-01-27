@@ -1,3 +1,26 @@
+"""
+Abaqus Watcher GUI
+==================
+
+A modern, cross-platform Desktop Application to monitor SIMULIA Abaqus jobs remotely via Telegram.
+This tool watches a specified directory for Abaqus lock files (.lck) and status files (.sta),
+providing real-time updates, convergence plots, and remote termination capabilities.
+
+Features:
+- **Real-time Monitoring:** Detects new jobs, completions, and errors.
+- **Remote Control:** Check status or kill jobs via Telegram commands.
+- **Convergence Plots:** Generates Step Time vs. Increment Size graphs.
+- **Secure Storage:** Uses Windows Credential Locker (Keyring) for sensitive tokens.
+- **System Tray:** Minimizes to background for unobtrusive monitoring.
+
+Dependencies:
+    pip install customtkinter packaging requests matplotlib keyring pystray Pillow
+
+Author: Souvik Biswas
+License: MIT
+Repository: https://github.com/daadaan/ABAQUS_watcher_project
+"""
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -16,89 +39,101 @@ from PIL import Image, ImageDraw
 import webbrowser
 from packaging import version
 
-# Use non-interactive backend for plots
+# Use non-interactive backend for plots to prevent GUI thread blocking
 matplotlib.use('Agg')
 
 # ================= CONFIGURATION =================
 CONFIG_FILE = "app_config.json"
 APP_NAME = "AbaqusWatcherGUI"
-GITHUB_REPO = "YourUsername/abaqus-watcher" # REPLACE THIS with your actual username/repo
+GITHUB_REPO = "daadaan/ABAQUS_watcher_project"  # GitHub API Endpoint for updates
 CURRENT_VERSION = "1.0.0"
 # =================================================
 
 class AbaqusWatcherApp(ctk.CTk):
+    """
+    Main Application Class.
+    Inherits from customtkinter.CTk to provide a modern dark/light mode interface.
+    """
     def __init__(self):
         super().__init__()
 
         # --- Window Setup ---
-        self.title("Abaqus Watcher")
-        self.geometry("320x600") # Taller to fit footer
+        self.title(f"Abaqus Watcher GUI v{CURRENT_VERSION}")
+        self.geometry("320x580")  # Optimized height for footer
         self.resizable(False, False)
         
+        # Match main window background to TabView for seamless look
+        self.configure(fg_color=("gray95", "gray15"))
+
         # --- Theme Setup ---
-        ctk.set_appearance_mode("System")
+        ctk.set_appearance_mode("System")  # Follows Windows Dark/Light mode
         ctk.set_default_color_theme("blue")
         
-        # --- Typography ---
+        # --- Typography Constants ---
         self.font_head = ("Roboto Medium", 14)
         self.font_body = ("Roboto", 12)
-        self.font_mono = ("Consolas", 11)
+        self.font_mono = ("Consolas", 11)  # Monospace for logs
         self.font_bold = ("Roboto", 12, "bold")
         self.font_small = ("Roboto", 10)
 
         # --- State Variables ---
         self.watcher_thread = None
-        self.stop_event = threading.Event()
+        self.stop_event = threading.Event()  # Controls the background thread
         self.is_running = False
-        self.job_heartbeats = {}
+        self.job_heartbeats = {}  # Tracks last update time for each job
         self.last_telegram_update_id = 0
         self.tray_icon = None
         self.tray_thread = None
 
-        # --- Config Vars ---
+        # --- Config Variables (Linked to UI) ---
         self.var_tray_enabled = ctk.BooleanVar(value=False)
         self.var_theme = ctk.StringVar(value="System")
 
-        # --- Init ---
+        # --- Initialization ---
         self.create_ui()
         self.setup_tray_icon()
         self.load_config()
 
-        # --- Bindings ---
-        self.protocol('WM_DELETE_WINDOW', self.on_closing)
-        self.bind("<Unmap>", self.check_minimize_event)
+        # --- Window Event Bindings ---
+        self.protocol('WM_DELETE_WINDOW', self.on_closing)  # Handle X button
+        self.bind("<Unmap>", self.check_minimize_event)     # Handle Minimize
 
     def create_ui(self):
-        # minimal tabview
+        """Builds the Tabbed Interface and Layout."""
+        
+        # Initialize TabView with custom colors for seamless integration
         self.tabview = ctk.CTkTabview(self, width=300, height=520, corner_radius=10,
                               fg_color=("gray95", "gray15"), 
                               segmented_button_fg_color=("gray85", "gray25"), 
                               segmented_button_unselected_color=("gray85", "gray25"),
-                              segmented_button_selected_color=("#ACC9F7", "#3B82F6"),
-                              segmented_button_selected_hover_color=("#93AADD", "#2563EB"),
+                              segmented_button_selected_color=("#ACC9F7", "#0947CE"),
+                              segmented_button_selected_hover_color=("#93AADD", "#1A67E3"),
                               text_color=("gray40", "gray80")
                               )
-        self.tabview.pack(padx=10, pady=(5, 0), fill="both", expand=True)
+        self.tabview.pack(padx=0, pady=0, fill="both", expand=True)
         self.tabview._segmented_button.configure(font=self.font_bold)
 
+        # Create Tabs
         self.tab_monitor = self.tabview.add("Monitor")
         self.tab_settings = self.tabview.add("Config")
         self.tab_help = self.tabview.add("Help")
 
         # --- GLOBAL FOOTER (COPYRIGHT) ---
-        # Placed in main window to appear on all tabs
+        # Placed in the main window scope to appear on all tabs
         lbl_copyright = ctk.CTkLabel(self, text=f"© {time.localtime().tm_year} Souvik Biswas", 
                                      font=("Segoe UI", 10), text_color=("gray50", "gray50"))
-        lbl_copyright.pack(side="bottom", pady=5)
+        lbl_copyright.pack(side="bottom", pady=(0, 5))
 
-        # ================= TAB 1: MONITOR =================
+        # ================= TAB 1: MONITOR UI =================
         
+        # Status Card (Visual indicator of running state)
         self.frame_status = ctk.CTkFrame(self.tab_monitor, corner_radius=8, fg_color=("gray90", "gray13")) 
         self.frame_status.pack(pady=(20, 15), padx=10, fill="x")
         
         self.lbl_status = ctk.CTkLabel(self.frame_status, text="STOPPED", text_color="#EF4444", font=("Roboto", 14, "bold"))
         self.lbl_status.pack(pady=10)
 
+        # Main Controls
         self.btn_start = ctk.CTkButton(self.tab_monitor, text="START WATCHER", command=self.toggle_watcher, 
                                        fg_color="#15803d", hover_color="#14532d",
                                        font=self.font_bold, height=45, corner_radius=6)
@@ -110,6 +145,7 @@ class AbaqusWatcherApp(ctk.CTk):
                                       font=self.font_body, height=30)
         self.btn_ping.pack(padx=10, pady=10, fill="x")
 
+        # Log Console
         ctk.CTkLabel(self.tab_monitor, text="Live Activity", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(15, 2), fill="x")
 
         self.console = ctk.CTkTextbox(self.tab_monitor, width=280, height=200, font=self.font_mono, 
@@ -117,20 +153,16 @@ class AbaqusWatcherApp(ctk.CTk):
         self.console.pack(padx=5, pady=0, fill="both", expand=True)
         self.console.configure(state="disabled")
 
-        # ================= TAB 2: CONFIG =================
+        # ================= TAB 2: CONFIG UI =================
         
         self.frame_cfg = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
         self.frame_cfg.pack(fill="both", expand=True, padx=5)
 
-        # Reduced pady from (12,0) to (5,0) for labels
-        # Reduced pady inside add_input to make fields closer
-        
-        # 1. Credentials
+        # 1. Credentials Input (Masked)
         self.add_input(self.frame_cfg, "Bot Token", "entry_token", secret=True)
         self.add_input(self.frame_cfg, "Chat ID", "entry_chat_id", secret=True)
 
-        # 2. Directory Selector
-        # Reduced pady from (12,0) to (5,0)
+        # 2. Directory Selector with Browse Button
         ctk.CTkLabel(self.frame_cfg, text="ABAQUS Temp Directory", anchor="w", font=self.font_bold, text_color=("gray50", "gray50")).pack(padx=5, pady=(5,0), fill="x")
         
         self.frame_dir = ctk.CTkFrame(self.frame_cfg, fg_color="transparent")
@@ -143,63 +175,61 @@ class AbaqusWatcherApp(ctk.CTk):
                                         fg_color=("gray80", "gray30"), hover_color=("gray70", "gray40"), text_color=("black", "white"))
         self.btn_browse.pack(side="right")
 
-        # 3. Heartbeat
+        # 3. Settings
         self.add_input(self.frame_cfg, "Heartbeat (s)", "entry_heartbeat", default="3600")
 
-        # 4. Options Section (Reduced top padding from 25 to 15)
+        # 4. Appearance Options
         self.frame_opts = ctk.CTkFrame(self.frame_cfg, fg_color="transparent")
         self.frame_opts.pack(fill="x", pady=15)
         
-        # Theme Selector
         ctk.CTkLabel(self.frame_opts, text="Theme", font=self.font_body).pack(side="left", padx=5)
         self.opt_theme = ctk.CTkOptionMenu(self.frame_opts, values=["System", "Dark", "Light"], width=100, height=28,
                                            variable=self.var_theme, command=self.change_theme, font=self.font_body)
         self.opt_theme.pack(side="left", padx=10)
 
-        # Tray Switch (Reduced bottom padding from 20 to 10)
         self.switch_tray = ctk.CTkSwitch(self.frame_cfg, text="Minimize to Tray", font=self.font_body,
                                          variable=self.var_tray_enabled, height=24, width=50)
         self.switch_tray.pack(padx=5, pady=(5, 10), anchor="w")
 
-        # Save Button (Reduced vertical padding)
+        # Save Button
         self.btn_save = ctk.CTkButton(self.tab_settings, text="Save Settings", command=self.save_config, 
-                                      fg_color="#3B82F6", hover_color="#2563EB", 
+                                      fg_color="#2563EB", hover_color="#3B82F6", 
                                       font=self.font_bold, height=40)
         self.btn_save.pack(side="top", padx=5, pady=(5, 5), fill="x")
 
         # --- UTILITY FOOTER (Config Tab) ---
         self.frame_utils = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
-        self.frame_utils.pack(side="bottom", fill="x", pady=10) # Reduced from 15
+        self.frame_utils.pack(side="bottom", fill="x", pady=(10, 0))
 
-        # Configure 2x2 Grid
+        # Grid Layout forFooter buttons
         self.frame_utils.columnconfigure(0, weight=1)
         self.frame_utils.columnconfigure(1, weight=1)
 
         # Button 1: Clear Data
         btn_clear = ctk.CTkButton(self.frame_utils, text="Clear Data", command=self.clear_config,
-                                  fg_color="transparent", border_width=1, border_color="#EF4444", text_color="#EF4444",
+                                  fg_color="transparent", border_width=2, border_color="#EF4444", text_color="#EF4444",
                                   hover_color=("#FEE2E2", "#450a0a"), font=self.font_small, height=28)
-        btn_clear.grid(row=0, column=0, padx=5, pady=2, sticky="ew") # Reduced pady
+        btn_clear.grid(row=0, column=0, padx=5, pady=2, sticky="ew")
 
         # Button 2: Check Updates
         btn_update = ctk.CTkButton(self.frame_utils, text="Check Updates", command=self.check_updates,
-                                   fg_color="transparent", border_width=1, border_color="#3B82F6", text_color="#3B82F6",
+                                   fg_color="transparent", border_width=2, border_color="#3B82F6", text_color="#3B82F6",
                                    hover_color=("#DBEAFE", "#172554"), font=self.font_small, height=28)
-        btn_update.grid(row=0, column=1, padx=5, pady=2, sticky="ew") # Reduced pady
+        btn_update.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
 
         # Link 1: GitHub Repo
         btn_repo = ctk.CTkButton(self.frame_utils, text="GitHub Repo", 
-                                 fg_color="transparent", hover=False, text_color=("gray50", "gray60"), font=("Segoe UI", 10, "underline"),
+                                 fg_color="transparent", hover=False, text_color=("gray50", "gray60"), font=("Segoe UI", 12, "underline"),
                                  height=20, command=lambda: webbrowser.open(f"https://github.com/{GITHUB_REPO}"))
-        btn_repo.grid(row=1, column=0, padx=5, pady=(2,0), sticky="ew") # Reduced pady
+        btn_repo.grid(row=1, column=0, padx=5, pady=(2,0), sticky="ew")
 
         # Link 2: Report Issue
         btn_issue = ctk.CTkButton(self.frame_utils, text="Report Issue", 
-                                  fg_color="transparent", hover=False, text_color="#EF4444", font=("Segoe UI", 10, "underline"),
+                                  fg_color="transparent", hover=False, text_color="#EF4444", font=("Segoe UI", 12, "underline"),
                                   height=20, command=lambda: webbrowser.open(f"https://github.com/{GITHUB_REPO}/issues"))
-        btn_issue.grid(row=1, column=1, padx=5, pady=(2,0), sticky="ew") # Reduced pady
+        btn_issue.grid(row=1, column=1, padx=5, pady=(2,0), sticky="ew")
 
-        # ================= TAB 3: HELP =================
+        # ================= TAB 3: HELP UI =================
         help_text = (
             "COMMANDS\n"
             "──────────────────────────────\n"
@@ -221,7 +251,7 @@ class AbaqusWatcherApp(ctk.CTk):
         lbl_help.pack(padx=15, pady=20, fill="both", expand=True)
 
     def add_input(self, parent, label, var_name, default="", secret=False):
-        # Reduced pady from (12,0) to (5,0)
+        """Helper to create labeled input fields with optional password toggles."""
         ctk.CTkLabel(parent, text=label, anchor="w", font=self.font_bold, text_color=("gray50", "gray50")).pack(padx=5, pady=(5,0), fill="x")
         
         frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -242,6 +272,7 @@ class AbaqusWatcherApp(ctk.CTk):
         setattr(self, var_name, entry)
 
     def toggle_password(self, entry, btn):
+        """Toggles entry visibility between masked and plain text."""
         if entry.cget("show") == "●":
             entry.configure(show="")
             btn.configure(text="✕") # Icon when visible
@@ -250,12 +281,14 @@ class AbaqusWatcherApp(ctk.CTk):
             btn.configure(text="👁") # Icon when hidden
 
     def browse_directory(self):
+        """Opens file dialog to select the Abaqus Temp directory."""
         dir_path = filedialog.askdirectory()
         if dir_path:
             self.entry_dir.delete(0, 'end')
             self.entry_dir.insert(0, dir_path)
 
     def check_updates(self):
+        """Queries GitHub API to check for new releases."""
         def _check():
             try:
                 url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -276,8 +309,9 @@ class AbaqusWatcherApp(ctk.CTk):
         
         threading.Thread(target=_check).start()
 
-    # --- TRAY LOGIC ---
+    # --- SYSTEM TRAY LOGIC ---
     def setup_tray_icon(self):
+        """Configures the background system tray icon."""
         image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         draw.ellipse([10, 10, 54, 54], fill=(16, 185, 129)) 
@@ -289,6 +323,7 @@ class AbaqusWatcherApp(ctk.CTk):
         self.tray_icon = pystray.Icon("AbaqusWatcher", image, "Abaqus Watcher", menu)
 
     def check_minimize_event(self, event):
+        """Intercepts window minimize event to hide to tray if enabled."""
         if self.state() == 'iconic' and self.var_tray_enabled.get():
             self.withdraw()
             if not self.tray_thread or not self.tray_thread.is_alive():
@@ -310,8 +345,9 @@ class AbaqusWatcherApp(ctk.CTk):
         self.stop_event.set()
         self.quit()
 
-    # --- CONFIG & CREDENTIALS ---
+    # --- CONFIGURATION IO ---
     def load_config(self):
+        """Loads non-sensitive config from JSON and secrets from Keyring."""
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
@@ -324,6 +360,7 @@ class AbaqusWatcherApp(ctk.CTk):
                     ctk.set_appearance_mode(theme)
             except: pass
         try:
+            # Retrieve secrets safely from Windows Credential Manager
             t = keyring.get_password(APP_NAME, "bot_token")
             c = keyring.get_password(APP_NAME, "chat_id")
             if t: self.entry_token.delete(0, 'end'); self.entry_token.insert(0, t)
@@ -332,6 +369,7 @@ class AbaqusWatcherApp(ctk.CTk):
         except: self.log("Keyring error.")
 
     def save_config(self):
+        """Saves settings to JSON and secrets to Keyring."""
         t, c = self.entry_token.get().strip(), self.entry_chat_id.get().strip()
         d, h = self.entry_dir.get().strip(), self.entry_heartbeat.get().strip()
         data = {"watch_dir": d, "heartbeat": h, "tray_enabled": self.var_tray_enabled.get(), "theme": self.var_theme.get()}
@@ -346,6 +384,7 @@ class AbaqusWatcherApp(ctk.CTk):
             self.log(f"Save failed: {e}")
 
     def clear_config(self):
+        """Wipes all local configuration and vault secrets."""
         if messagebox.askyesno("Reset", "Clear all data?"):
             try:
                 if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
@@ -359,8 +398,9 @@ class AbaqusWatcherApp(ctk.CTk):
                 self.log("Data wiped.")
             except: pass
 
-    # --- WATCHER LOGIC ---
+    # --- CORE WATCHER LOGIC ---
     def log(self, message):
+        """Thread-safe logging to the UI console."""
         ts = datetime.now().strftime("%H:%M")
         self.after(0, lambda: self._update_console(f"[{ts}] {message}\n"))
 
@@ -371,9 +411,11 @@ class AbaqusWatcherApp(ctk.CTk):
         self.console.configure(state="disabled")
 
     def ping_test(self):
+        """Checks internet connectivity."""
         threading.Thread(target=lambda: self.log("Online.") if requests.get("https://google.com", timeout=3) else self.log("Offline.")).start()
 
     def toggle_watcher(self):
+        """Starts or Stops the monitoring thread."""
         if self.is_running:
             self.stop_event.set()
             self.is_running = False
@@ -389,6 +431,7 @@ class AbaqusWatcherApp(ctk.CTk):
             self.watcher_thread.start()
 
     def run_loop(self):
+        """The main background loop that checks for Abaqus files and updates Telegram."""
         self.log("Monitoring active.")
         token = self.entry_token.get().strip()
         chat_id = self.entry_chat_id.get().strip()
@@ -404,16 +447,21 @@ class AbaqusWatcherApp(ctk.CTk):
         self.job_heartbeats = {}
         while not self.stop_event.is_set():
             try:
+                # 1. Check for incoming Telegram commands (/status, /kill)
                 self.check_telegram(token, chat_id, watch_dir)
+                
+                # 2. Scan directory for Lock Files (.lck)
                 files = os.listdir(watch_dir)
                 active = [f.replace('.lck', '') for f in files if f.endswith('.lck')]
 
+                # 3. Handle NEW jobs
                 for job in active:
                     if job not in self.job_heartbeats:
                         self.job_heartbeats[job] = time.time()
                         self.log(f"New: {job}")
                         self.send_tg(token, chat_id, f"**Started:** `{job}`", "🚀")
 
+                # 4. Handle FINISHED jobs (Lock file gone)
                 for job in list(self.job_heartbeats):
                     if job not in active:
                         status, icon, det = self.get_status(watch_dir, job)
@@ -423,6 +471,7 @@ class AbaqusWatcherApp(ctk.CTk):
                         self.log(f"End: {job} [{status}]")
                         del self.job_heartbeats[job]
 
+                # 5. Handle HEARTBEATS (Regular updates for running jobs)
                 now = time.time()
                 for job in active:
                     if (now - self.job_heartbeats[job]) > hb:
@@ -436,8 +485,9 @@ class AbaqusWatcherApp(ctk.CTk):
                 self.log(f"Loop Err: {e}")
                 time.sleep(5)
 
-    # --- HELPERS (Compact) ---
+    # --- TELEGRAM HELPERS ---
     def send_tg(self, token, chat_id, text, icon, img=None, silent=True):
+        """Sends text or images to Telegram API."""
         url = f"https://api.telegram.org/bot{token}"
         try:
             d = {"chat_id": chat_id, "parse_mode": "Markdown", "disable_notification": silent}
@@ -452,6 +502,7 @@ class AbaqusWatcherApp(ctk.CTk):
         except: self.log("Telegram Err.")
 
     def check_telegram(self, token, chat_id, watch_dir):
+        """Polls Telegram for user commands."""
         try:
             url = f"https://api.telegram.org/bot{token}/getUpdates"
             params = {'offset': self.last_telegram_update_id + 1, 'timeout': 1}
@@ -463,6 +514,7 @@ class AbaqusWatcherApp(ctk.CTk):
                 if sender != str(chat_id): continue
                 text = res.get('message', {}).get('text', '').strip()
                 
+                # Command Parsing
                 if text.startswith("/status"):
                     parts = text.split()
                     if len(parts) > 1 and parts[1].lower() != "all":
@@ -479,7 +531,9 @@ class AbaqusWatcherApp(ctk.CTk):
                         self.send_tg(token, chat_id, f"Kill sent: `{job}`", "💀")
         except: pass
 
+    # --- FILE PARSING HELPERS ---
     def get_status(self, d, j):
+        """Reads the .sta file to determine final job status (Success/Error)."""
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "FINISHED", "⚠️", "No Data"
         try:
@@ -492,6 +546,7 @@ class AbaqusWatcherApp(ctk.CTk):
         return "UNKNOWN", "❓", "Error"
 
     def get_details(self, d, j):
+        """Parses the .sta file for detailed progress (Time, dt, Energies)."""
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "Waiting..."
         try:
@@ -519,6 +574,7 @@ class AbaqusWatcherApp(ctk.CTk):
         except: return "Error"
 
     def gen_plot(self, d, j):
+        """Generates a convergence plot (Time vs dt) using Matplotlib."""
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return None
         out = os.path.join(d, "job_watcher")
