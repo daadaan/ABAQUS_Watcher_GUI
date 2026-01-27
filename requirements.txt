@@ -1,0 +1,7 @@
+customtkinter
+packaging
+requests
+matplotlib
+keyring
+pystray
+Pillow

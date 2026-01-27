@@ -10,4 +10,4 @@ secrets.py
 *.log
 
 # Ignore the GUI config file
-app_config.json
+abaqus_watcher_config.json

@@ -1,9 +1,9 @@
 """
-Abaqus Watcher GUI
+ABAQUS Watcher GUI
 ==================
 
-A modern, cross-platform Desktop Application to monitor SIMULIA Abaqus jobs remotely via Telegram.
-This tool watches a specified directory for Abaqus lock files (.lck) and status files (.sta),
+A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remotely via Telegram.
+This tool watches a specified directory for ABAQUS lock files (.lck) and status files (.sta),
 providing real-time updates, convergence plots, and remote termination capabilities.
 
 Features:
@@ -21,32 +21,50 @@ License: MIT
 Repository: https://github.com/daadaan/ABAQUS_watcher_project
 """
 
+from __future__ import annotations
+
+# Threading model (important for GUI stability)
+# - Tk/customtkinter widgets must only be modified from the main thread.
+# - Long-running work (directory polling, Telegram network calls, update checks)
+#   is run in background threads.
+# - Background threads post UI updates via self.after(0, ...).
+
 import customtkinter as ctk
-import tkinter as tk
 from tkinter import messagebox, filedialog
 import json
 import os
+import sys
 import threading
 import time
 import requests
 import subprocess
 import matplotlib
-import matplotlib.pyplot as plt
 import keyring
 from datetime import datetime
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import webbrowser
 from packaging import version
+import re
+from typing import Any, Optional
 
 # Use non-interactive backend for plots to prevent GUI thread blocking
 matplotlib.use('Agg')
 
+import matplotlib.pyplot as plt
+
 # ================= CONFIGURATION =================
-CONFIG_FILE = "app_config.json"
-APP_NAME = "AbaqusWatcherGUI"
+CONFIG_FILE = "abaqus_watcher_config.json"
+APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_watcher_project"  # GitHub API Endpoint for updates
 CURRENT_VERSION = "1.0.0"
+
+# Performance Constants
+MAX_TAIL_BYTES = 250_000  # Maximum bytes to read from end of .sta files
+MAX_CONSOLE_LINES = 500   # Maximum lines to keep in the log console
+MAX_SUMMARY_JOBS = 15     # Maximum jobs to include in /status all
+HEADER_SCAN_LINES = 30    # Lines to scan for start date in header
+START_SCAN_LINES = 200    # Lines to scan for start time in summary
 # =================================================
 
 class AbaqusWatcherApp(ctk.CTk):
@@ -57,10 +75,27 @@ class AbaqusWatcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Help static type checkers; these are assigned in create_ui/add_input.
+        self.entry_token: Optional[ctk.CTkEntry] = None
+        self.entry_chat_id: Optional[ctk.CTkEntry] = None
+        self.entry_heartbeat: Optional[ctk.CTkEntry] = None
+        self.entry_dir: Optional[ctk.CTkEntry] = None
+        # pystray's type stubs are loose; keep this as Any for static checkers.
+        self.tray_icon: Any = None
+
         # --- Window Setup ---
-        self.title(f"Abaqus Watcher GUI v{CURRENT_VERSION}")
-        self.geometry("320x580")  # Optimized height for footer
+        self.title(f"{APP_NAME}")
+        self.geometry("320x580")
         self.resizable(False, False)
+
+        # Generate icon image dynamically
+        icon_img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        ImageDraw.Draw(icon_img).ellipse([10, 10, 54, 54], fill="#6769a2")
+
+        # Use a Tk-compatible PhotoImage for the window icon and keep a reference.
+        # NOTE: customtkinter's CTkImage cannot be used with Tk's iconphoto.
+        self._icon_photo = ImageTk.PhotoImage(icon_img)
+        self.iconphoto(False, self._icon_photo)  # type: ignore[arg-type]
         
         # Match main window background to TabView for seamless look
         self.configure(fg_color=("gray95", "gray15"))
@@ -82,7 +117,6 @@ class AbaqusWatcherApp(ctk.CTk):
         self.is_running = False
         self.job_heartbeats = {}  # Tracks last update time for each job
         self.last_telegram_update_id = 0
-        self.tray_icon = None
         self.tray_thread = None
 
         # --- Config Variables (Linked to UI) ---
@@ -120,7 +154,7 @@ class AbaqusWatcherApp(ctk.CTk):
 
         # --- GLOBAL FOOTER (COPYRIGHT) ---
         # Placed in the main window scope to appear on all tabs
-        lbl_copyright = ctk.CTkLabel(self, text=f"© {time.localtime().tm_year} Souvik Biswas", 
+        lbl_copyright = ctk.CTkLabel(self, text=f"© {time.localtime().tm_year} Souvik Biswas\nv{CURRENT_VERSION}", 
                                      font=("Segoe UI", 10), text_color=("gray50", "gray50"))
         lbl_copyright.pack(side="bottom", pady=(0, 5))
 
@@ -148,8 +182,19 @@ class AbaqusWatcherApp(ctk.CTk):
         # Log Console
         ctk.CTkLabel(self.tab_monitor, text="Live Activity", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(15, 2), fill="x")
 
-        self.console = ctk.CTkTextbox(self.tab_monitor, width=280, height=200, font=self.font_mono, 
-                                      fg_color=("white", "black"), text_color=("black", "white"), corner_radius=6, border_width=1, border_color=("gray80", "gray30"))
+        # Live log console. We provide light/dark tuples for colors.
+        # Some type stubs declare `text_color` as `str`, but CTk supports tuples at runtime.
+        self.console = ctk.CTkTextbox(
+            self.tab_monitor,
+            width=280,
+            height=200,
+            font=self.font_mono,
+            fg_color=("white", "black"),
+            text_color=("black", "white"),  # type: ignore[arg-type]
+            corner_radius=6,
+            border_width=1,
+            border_color=("gray80", "gray30"),
+        )
         self.console.pack(padx=5, pady=0, fill="both", expand=True)
         self.console.configure(state="disabled")
 
@@ -282,39 +327,102 @@ class AbaqusWatcherApp(ctk.CTk):
 
     def browse_directory(self):
         """Opens file dialog to select the Abaqus Temp directory."""
+        if not self.entry_dir:
+            return
         dir_path = filedialog.askdirectory()
         if dir_path:
             self.entry_dir.delete(0, 'end')
             self.entry_dir.insert(0, dir_path)
 
     def check_updates(self):
-        """Queries GitHub API to check for new releases."""
+        """Checks for updates and handles them based on deployment type (Exe vs Script)."""
         def _check():
             try:
-                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-                resp = requests.get(url, timeout=3)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    latest_ver = data['tag_name'].replace('v', '')
-                    if version.parse(latest_ver) > version.parse(CURRENT_VERSION):
-                        if messagebox.askyesno("Update Available", f"New version {latest_ver} is available.\nOpen download page?"):
-                            webbrowser.open(data['html_url'])
-                    else:
-                        messagebox.showinfo("Up to Date", f"You are running the latest version ({CURRENT_VERSION}).")
+                # 1. Fetch Latest Release Info
+                api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                resp = requests.get(api_url, timeout=3)
+                
+                if resp.status_code != 200:
+                    self.log("Update check failed.")
+                    return
+
+                data = resp.json()
+                latest_tag = data['tag_name'] # e.g., "v1.1.0"
+                latest_ver = latest_tag.replace('v', '')
+
+                # 2. Compare Versions
+                if version.parse(latest_ver) <= version.parse(CURRENT_VERSION):
+                    messagebox.showinfo("Up to Date", f"You are running the latest version ({CURRENT_VERSION}).")
+                    return
+
+                # ============================================
+                # UPDATE LOGIC STARTS HERE
+                # ============================================
+                
+                # SCENARIO A: Running as Compiled EXE (Frozen)
+                # When frozen, we cannot safely self-overwrite; open Releases page instead.
+                if getattr(sys, 'frozen', False):
+                    if messagebox.askyesno("Update Available", f"New version {latest_ver} is available.\nOpen download page?"):
+                        webbrowser.open(data['html_url'])
+                
+                # SCENARIO B: Running as Python Script
+                # When running as script, we can download and overwrite this .py file.
                 else:
-                    messagebox.showerror("Error", "Could not fetch update info.")
+                    msg = (f"New version {latest_ver} is available.\n\n"
+                           "Since you are running the script, I can auto-update.\n"
+                           "Do you want to download and overwrite this script now?")
+                    
+                    if messagebox.askyesno("Update Script", msg):
+                        self.perform_script_update(latest_tag)
+
             except Exception as e:
-                print(e)
-                messagebox.showerror("Error", "Network error while checking updates.")
+                print(f"Update Error: {e}")
+                self.log("Err: Update check failed.")
         
-        threading.Thread(target=_check).start()
+        threading.Thread(target=_check, daemon=True).start()
+
+    def perform_script_update(self, tag_name):
+        """Downloads the raw .py file from GitHub and overwrites the current script."""
+        try:
+            self.log("Downloading update...")
+            
+            # Construct URL to RAW file on GitHub
+            # NOTE: Ensure the filename in the URL matches your repo filename exactly!
+            raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag_name}/abaqus_watcher_gui.py"
+            
+            resp = requests.get(raw_url, timeout=10)
+            if resp.status_code != 200:
+                messagebox.showerror("Error", "Could not fetch update file.")
+                return
+
+            # Read new code
+            new_code = resp.text
+
+            # Safety Check: Ensure we actually got a Python script back
+            if "class AbaqusWatcherApp" not in new_code:
+                messagebox.showerror("Error", "Invalid update file received.")
+                return
+
+            # Overwrite current file
+            # __file__ is the path to the currently running script
+            with open(__file__, 'w', encoding='utf-8') as f:
+                f.write(new_code)
+
+            self.log("Update complete!")
+            
+            if messagebox.askyesno("Updated", "Update successful! The app needs to restart.\nRestart now?"):
+                # Restart the script
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        except Exception as e:
+            messagebox.showerror("Update Error", f"Failed to overwrite script:\n{e}")
 
     # --- SYSTEM TRAY LOGIC ---
     def setup_tray_icon(self):
         """Configures the background system tray icon."""
         image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        draw.ellipse([10, 10, 54, 54], fill=(16, 185, 129)) 
+        draw.ellipse([10, 10, 54, 54], fill="#6769a2") 
         
         menu = pystray.Menu(
             pystray.MenuItem("Open Monitor", self.show_window_from_tray, default=True),
@@ -324,14 +432,16 @@ class AbaqusWatcherApp(ctk.CTk):
 
     def check_minimize_event(self, event):
         """Intercepts window minimize event to hide to tray if enabled."""
-        if self.state() == 'iconic' and self.var_tray_enabled.get():
+        if self.state() == 'iconic' and self.var_tray_enabled.get() and self.tray_icon is not None:
             self.withdraw()
             if not self.tray_thread or not self.tray_thread.is_alive():
+                # Run the tray icon loop in a daemon thread so it doesn't block app exit.
                 self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
                 self.tray_thread.start()
 
     def show_window_from_tray(self, icon=None, item=None):
-        self.tray_icon.stop()
+        if self.tray_icon is not None:
+            self.tray_icon.stop()
         self.after(0, self.deiconify)
 
     def change_theme(self, new_theme: str):
@@ -341,16 +451,19 @@ class AbaqusWatcherApp(ctk.CTk):
         self.quit_app()
 
     def quit_app(self, icon=None, item=None):
-        if self.tray_icon: self.tray_icon.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
         self.stop_event.set()
         self.quit()
 
     # --- CONFIGURATION IO ---
     def load_config(self):
         """Loads non-sensitive config from JSON and secrets from Keyring."""
+        if not self.entry_dir or not self.entry_heartbeat or not self.entry_token or not self.entry_chat_id:
+            return
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.entry_dir.delete(0, 'end'); self.entry_dir.insert(0, data.get("watch_dir", ""))
                     self.entry_heartbeat.delete(0, 'end'); self.entry_heartbeat.insert(0, data.get("heartbeat", "3600"))
@@ -370,6 +483,10 @@ class AbaqusWatcherApp(ctk.CTk):
 
     def save_config(self):
         """Saves settings to JSON and secrets to Keyring."""
+        if not self.entry_token or not self.entry_chat_id or not self.entry_dir or not self.entry_heartbeat:
+            self.log("Err: UI not initialized.")
+            return
+
         t, c = self.entry_token.get().strip(), self.entry_chat_id.get().strip()
         d, h = self.entry_dir.get().strip(), self.entry_heartbeat.get().strip()
         data = {"watch_dir": d, "heartbeat": h, "tray_enabled": self.var_tray_enabled.get(), "theme": self.var_theme.get()}
@@ -377,15 +494,20 @@ class AbaqusWatcherApp(ctk.CTk):
         try:
             if t: keyring.set_password(APP_NAME, "bot_token", t)
             if c: keyring.set_password(APP_NAME, "chat_id", c)
-            with open(CONFIG_FILE, 'w') as f: json.dump(data, f)
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
             self.log("Settings saved.")
-            tk.messagebox.showinfo("Saved", "Configuration updated.")
+            messagebox.showinfo("Saved", "Configuration updated.")
         except Exception as e:
             self.log(f"Save failed: {e}")
 
     def clear_config(self):
         """Wipes all local configuration and vault secrets."""
         if messagebox.askyesno("Reset", "Clear all data?"):
+
+            if self.is_running:
+                self.toggle_watcher()
+
             try:
                 if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
                 try: keyring.delete_password(APP_NAME, "bot_token")
@@ -393,8 +515,10 @@ class AbaqusWatcherApp(ctk.CTk):
                 try: keyring.delete_password(APP_NAME, "chat_id")
                 except: pass
                 
-                self.entry_token.delete(0, 'end'); self.entry_chat_id.delete(0, 'end')
-                self.entry_dir.delete(0, 'end'); self.entry_heartbeat.delete(0, 'end')
+                if self.entry_token and self.entry_chat_id:
+                    self.entry_token.delete(0, 'end'); self.entry_chat_id.delete(0, 'end')
+                if self.entry_dir and self.entry_heartbeat:
+                    self.entry_dir.delete(0, 'end'); self.entry_heartbeat.delete(0, 'end')
                 self.log("Data wiped.")
             except: pass
 
@@ -402,17 +526,38 @@ class AbaqusWatcherApp(ctk.CTk):
     def log(self, message):
         """Thread-safe logging to the UI console."""
         ts = datetime.now().strftime("%H:%M")
+        # Strictly pass the text to the UI update method
         self.after(0, lambda: self._update_console(f"[{ts}] {message}\n"))
 
     def _update_console(self, text):
+        """Updates the console and trims old lines to save memory."""
         self.console.configure(state="normal")
         self.console.insert("end", text)
+
+        # 1. Get the current line count from the textbox
+        # 'end-1c' gets the position just before the final newline
+        current_lines = int(self.console.index('end-1c').split('.')[0])
+
+        # 2. If the log exceeds MAX_CONSOLE_LINES, delete the oldest line (1.0 to 2.0)
+        # Keeping the log bounded prevents the Text widget from growing indefinitely.
+        if current_lines > MAX_CONSOLE_LINES:
+            self.console.delete("1.0", "2.0")
+
+        # 3. Auto-scroll to the bottom and lock the text
         self.console.see("end")
         self.console.configure(state="disabled")
 
     def ping_test(self):
         """Checks internet connectivity."""
-        threading.Thread(target=lambda: self.log("Online.") if requests.get("https://google.com", timeout=3) else self.log("Offline.")).start()
+        def _ping():
+            try:
+                # generate_204 returns quickly and has tiny payload.
+                requests.get("https://www.google.com/generate_204", timeout=3)
+                self.log("Online.")
+            except Exception:
+                self.log("Offline.")
+
+        threading.Thread(target=_ping, daemon=True).start()
 
     def toggle_watcher(self):
         """Starts or Stops the monitoring thread."""
@@ -431,19 +576,38 @@ class AbaqusWatcherApp(ctk.CTk):
             self.watcher_thread.start()
 
     def run_loop(self):
-        """The main background loop that checks for Abaqus files and updates Telegram."""
+        """Main background watcher loop.
+
+        Responsibilities:
+        - Poll for Telegram commands (/status, /kill)
+        - Discover running jobs via .lck files
+        - Send start/finish notifications
+        - Send periodic heartbeat updates
+
+        Performance notes:
+        - Uses os.scandir() for directory scanning.
+        - Caches each job's start timestamp string to avoid re-reading file headers.
+        """
         self.log("Monitoring active.")
+        if not self.entry_token or not self.entry_chat_id or not self.entry_dir or not self.entry_heartbeat:
+            self.log("Err: UI not initialized.")
+            self.after(0, self.toggle_watcher)
+            return
+
         token = self.entry_token.get().strip()
         chat_id = self.entry_chat_id.get().strip()
         watch_dir = self.entry_dir.get().strip()
-        try: hb = int(self.entry_heartbeat.get().strip())
-        except: hb = 3600
+        try:
+            hb = int(self.entry_heartbeat.get().strip())
+        except Exception:
+            hb = 3600
 
         if not token or not chat_id or not os.path.exists(watch_dir):
             self.log("Err: Check config.")
             self.after(0, self.toggle_watcher)
             return
 
+        # job_heartbeats maps job_name -> {"last_hb": float, "start_date": str}
         self.job_heartbeats = {}
         while not self.stop_event.is_set():
             try:
@@ -451,15 +615,21 @@ class AbaqusWatcherApp(ctk.CTk):
                 self.check_telegram(token, chat_id, watch_dir)
                 
                 # 2. Scan directory for Lock Files (.lck)
-                files = os.listdir(watch_dir)
-                active = [f.replace('.lck', '') for f in files if f.endswith('.lck')]
+                # Presence of <job>.lck indicates Abaqus is running that job.
+                with os.scandir(watch_dir) as it:
+                    active = [entry.name[:-4] for entry in it if entry.is_file() and entry.name.endswith('.lck')]
 
                 # 3. Handle NEW jobs
                 for job in active:
                     if job not in self.job_heartbeats:
-                        self.job_heartbeats[job] = time.time()
+                        # Read start date ONLY ONCE
+                        start_date = self._get_start_date_once(watch_dir, job) 
+                        self.job_heartbeats[job] = {
+                            "last_hb": time.time(),
+                            "start_date": start_date
+                        }
                         self.log(f"New: {job}")
-                        self.send_tg(token, chat_id, f"**Started:** `{job}`", "🚀")
+                        self.send_tg(token, chat_id, f"**Started:** `{job}`\n{start_date}", "🚀")
 
                 # 4. Handle FINISHED jobs (Lock file gone)
                 for job in list(self.job_heartbeats):
@@ -473,11 +643,12 @@ class AbaqusWatcherApp(ctk.CTk):
 
                 # 5. Handle HEARTBEATS (Regular updates for running jobs)
                 now = time.time()
-                for job in active:
-                    if (now - self.job_heartbeats[job]) > hb:
-                        det = self.get_details(watch_dir, job)
+                for job, data in self.job_heartbeats.items():
+                    if job in active and (now - data["last_hb"]) > hb:
+                        # Pass the cached start_date to the details function
+                        det = self.get_details(watch_dir, job, data["start_date"])
                         self.send_tg(token, chat_id, f"**Running:** `{job}`\n{det}", "⏳")
-                        self.job_heartbeats[job] = now
+                        self.job_heartbeats[job]["last_hb"] = now
                         self.log(f"Heartbeat: {job}")
 
                 time.sleep(3)
@@ -488,6 +659,8 @@ class AbaqusWatcherApp(ctk.CTk):
     # --- TELEGRAM HELPERS ---
     def send_tg(self, token, chat_id, text, icon, img=None, silent=True):
         """Sends text or images to Telegram API."""
+        # Telegram calls happen in the watcher thread (not the UI thread).
+        # Keep timeouts conservative; never block the GUI.
         url = f"https://api.telegram.org/bot{token}"
         try:
             d = {"chat_id": chat_id, "parse_mode": "Markdown", "disable_notification": silent}
@@ -499,7 +672,8 @@ class AbaqusWatcherApp(ctk.CTk):
             else:
                 d['text'] = f"{icon} {text}"
                 requests.post(f"{url}/sendMessage", data=d, timeout=10)
-        except: self.log("Telegram Err.")
+        except Exception as e:
+            self.log(f"Telegram Err: {type(e).__name__}")
 
     def check_telegram(self, token, chat_id, watch_dir):
         """Polls Telegram for user commands."""
@@ -518,18 +692,48 @@ class AbaqusWatcherApp(ctk.CTk):
                 if text.startswith("/status"):
                     parts = text.split()
                     if len(parts) > 1 and parts[1].lower() != "all":
+                        # Specific Job Status - validate job name for security
                         job = parts[1]
-                        self.send_tg(token, chat_id, f"**Status:** `{job}`\n{self.get_details(watch_dir, job)}", "📈", self.gen_plot(watch_dir, job))
+                        if not self._is_safe_job_name(job):
+                            self.send_tg(token, chat_id, "Invalid job name.", "⚠️")
+                        else:
+                            self.send_tg(token, chat_id, f"**Status:** `{job}`\n{self.get_details(watch_dir, job)}", "📈", self.gen_plot(watch_dir, job))
                     else:
-                        if not self.job_heartbeats: self.send_tg(token, chat_id, "No jobs running.", "zzz")
-                        else: self.send_tg(token, chat_id, "\n\n".join([f"🔹 *{j}*\n{self.get_details(watch_dir, j)}" for j in self.job_heartbeats]), "📋")
+                        # /status all -> NEW LOGIC
+                        summary_text = self.get_full_summary(watch_dir)
+                        self.send_tg(token, chat_id, f"**Recent Jobs Summary:**\n\n{summary_text}", "🗂️")
                 elif text.startswith("/kill"):
                     parts = text.split()
                     if len(parts) > 1:
                         job = parts[1]
-                        subprocess.call(f"abaqus terminate job={job}", shell=True, cwd=watch_dir)
-                        self.send_tg(token, chat_id, f"Kill sent: `{job}`", "💀")
+                        # Security: don't pass untrusted user input to a shell.
+                        # We also validate allowed job name characters.
+                        if not self._is_safe_job_name(job):
+                            self.send_tg(token, chat_id, "Invalid job name.", "⚠️")
+                        else:
+                            try:
+                                subprocess.run(["abaqus", "terminate", f"job={job}"], cwd=watch_dir, check=False)
+                                self.send_tg(token, chat_id, f"Kill sent: `{job}`", "💀")
+                            except Exception:
+                                self.send_tg(token, chat_id, f"Failed to terminate: `{job}`", "🚨")
         except: pass
+
+    def _is_safe_job_name(self, job: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9._-]+", job))
+
+    def _read_tail_text(self, path: str, max_bytes: int = MAX_TAIL_BYTES) -> str:
+        """Reads only the tail of a text file for faster parsing of large .sta files."""
+        # Abaqus .sta files can grow very large; reading the tail is usually sufficient
+        # for "latest increment" style data without loading the whole file into RAM.
+        try:
+            with open(path, 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(size - max_bytes, 0), os.SEEK_SET)
+                data = f.read()
+            return data.decode('utf-8', errors='ignore')
+        except Exception:
+            return ""
 
     # --- FILE PARSING HELPERS ---
     def get_status(self, d, j):
@@ -537,64 +741,148 @@ class AbaqusWatcherApp(ctk.CTk):
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "FINISHED", "⚠️", "No Data"
         try:
-            with open(sta, 'r') as f:
-                c = f.read()
-                if "COMPLETED SUCCESSFULLY" in c: return "SUCCESS", "✅", "Converged"
-                elif "ERROR" in c: return "ABORTED", "🚨", "Check .msg"
-                else: return "TERMINATED", "⚠️", "Stopped"
+            tail = self._read_tail_text(sta)
+            if "COMPLETED SUCCESSFULLY" in tail:
+                return "SUCCESS", "✅", "Converged"
+            if "ERROR" in tail:
+                return "ABORTED", "🚨", "Check .msg"
+            return "TERMINATED", "⚠️", "Stopped"
         except: pass
         return "UNKNOWN", "❓", "Error"
 
-    def get_details(self, d, j):
-        """Parses the .sta file for detailed progress (Time, dt, Energies)."""
+    def _get_start_date_once(self, d, j):
+        """Reads the start date from the top of the file only once."""
+        sta = os.path.join(d, j + ".sta")
+        if not os.path.exists(sta): return ""
+        try:
+            with open(sta, 'r', encoding='utf-8', errors='ignore') as f:
+                for _ in range(HEADER_SCAN_LINES):
+                    line = f.readline()
+                    if "DATE" in line and "TIME" in line:
+                        p = line.split("DATE")[-1].split("TIME")
+                        return f"📅 {p[0].strip()} {p[1].strip()}"
+        except: pass
+        return ""
+    
+    def get_details(self, d, j, cached_start=""):
+        """Parses the .sta file for detailed progress using cached start time."""
+        # The top-of-file start date is cached when the job is first detected.
+        # Detailed increment data is taken from the tail of the file.
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "Waiting..."
         try:
-            with open(sta, 'r') as f:
-                lines = f.readlines()
-                dat, fra, step, start = "Reading...", "No Frames", "1", ""
-                found_d, found_s = False, False
-                for i in range(min(5, len(lines))):
-                    if "DATE" in lines[i] and "TIME" in lines[i]:
-                        try:
-                            p = lines[i].split("DATE")[-1].split("TIME")
-                            start = f"📅 {p[0].strip()} {p[1].strip()}\n"
-                            found_s = True
-                        except: pass
-                    if found_s: break
-                for line in reversed(lines):
-                    p = line.split()
-                    if not found_d and len(p)>7 and p[0].isdigit():
-                        dat = f"Time: {p[1]}s | dt: {p[4]}\nKE: {p[6]} | TE: {p[7]}"
-                        found_d = True
-                    if "ODB Field Frame Number" in line and len(p)>6: fra = f"Frames: {p[4]}/{p[6]}"
-                    if line.strip().startswith("STEP") and "ORIGIN" in line and len(p)>1 and p[1].isdigit(): step = p[1]
-                    if found_d and fra != "No Frames": break
-                return f"{start}Step {step} | {dat}\n📁 {fra}"
+            # Use cached start date instead of reading the file again
+            start = f"{cached_start}\n" if cached_start else ""
+
+            tail_lines = self._read_tail_text(sta).splitlines()
+            dat, fra, step = "Reading...", "No Frames", "1"
+            found_dat = False
+            for line in reversed(tail_lines):
+                parts = line.split()
+                if not found_dat and len(parts) > 7 and parts[0].isdigit():
+                    dat = f"Time: {parts[1]}s | dt: {parts[4]}\nKE: {parts[6]} | TE: {parts[7]}"
+                    found_dat = True
+                if fra == "No Frames" and "ODB Field Frame Number" in line and len(parts) > 6:
+                    fra = f"Frames: {parts[4]}/{parts[6]}"
+                if line.strip().startswith("STEP") and "ORIGIN" in line and len(parts) > 1 and parts[1].isdigit():
+                    step = parts[1]
+                if found_dat and fra != "No Frames":
+                    break
+            return f"{start}Step {step} | {dat}\n📁 {fra}"
         except: return "Error"
+    
+    def get_full_summary(self, watch_dir):
+        """Scans directory for all .sta files to summarize history (Running, Completed, Aborted)."""
+        files = [f for f in os.listdir(watch_dir) if f.endswith('.sta')]
+        if not files: return "No Abaqus jobs found."
+        
+        # Sort by modification time (newest first)
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(watch_dir, x)), reverse=True)
+        
+        summary = []
+        # Limit to top MAX_SUMMARY_JOBS recent jobs to prevent Telegram message length errors
+        for f in files[:MAX_SUMMARY_JOBS]: 
+            job = f.replace('.sta', '')
+            lck = os.path.join(watch_dir, job + '.lck')
+            sta = os.path.join(watch_dir, f)
+            
+            is_running = os.path.exists(lck)
+            status_icon = "❓"
+            start_t, end_t = "-", "-"
+            
+            try:
+                # Determine Status from tail (fast)
+                tail = self._read_tail_text(sta)
+                if is_running:
+                    status_icon = "🟢 Running"
+                elif "COMPLETED SUCCESSFULLY" in tail:
+                    status_icon = "✅ Completed"
+                elif "ERROR" in tail or "Aborted" in tail:
+                    status_icon = "❌ Aborted"
+                else:
+                    status_icon = "⚠️ Stopped"
+
+                # Start time: scan from top until first DATE/TIME
+                with open(sta, 'r', encoding='utf-8', errors='ignore') as file:
+                    for _ in range(START_SCAN_LINES):
+                        line = file.readline()
+                        if not line:
+                            break
+                        if "DATE" in line and "TIME" in line:
+                            parts = line.split()
+                            try:
+                                d_idx, t_idx = parts.index("DATE"), parts.index("TIME")
+                                start_t = f"{parts[d_idx+1]} {parts[t_idx+1]}"
+                            except Exception:
+                                pass
+                            break
+
+                # End time: scan tail for last DATE/TIME
+                for line in reversed(tail.splitlines()):
+                    if "DATE" in line and "TIME" in line:
+                        parts = line.split()
+                        try:
+                            d_idx, t_idx = parts.index("DATE"), parts.index("TIME")
+                            end_t = f"{parts[d_idx+1]} {parts[t_idx+1]}"
+                        except Exception:
+                            pass
+                        break
+            except: continue
+
+            # Format Entry
+            msg = f"**`{job}`**\nStatus: {status_icon}\n📅 Start: {start_t}"
+            if not is_running: msg += f"\n🏁 End: {end_t}"
+            summary.append(msg)
+            
+        return "\n\n".join(summary)
 
     def gen_plot(self, d, j):
         """Generates a convergence plot (Time vs dt) using Matplotlib."""
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return None
         out = os.path.join(d, "job_watcher")
-        if not os.path.exists(out): os.makedirs(out)
+        os.makedirs(out, exist_ok=True)
         t, dt = [], []
+        fig = None
         try:
-            with open(sta, 'r') as f:
+            with open(sta, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     p = line.split()
                     if len(p)>7 and p[0].isdigit():
                         try: t.append(float(p[1])); dt.append(float(p[4]))
                         except: continue
             if not t: return None
-            plt.figure(figsize=(10, 5))
+            fig = plt.figure(figsize=(10, 5))
             plt.plot(t, dt, color='#d62728', linewidth=1)
             plt.yscale('log'); plt.title(f"Stability: {j}"); plt.grid(True, alpha=0.4)
             path = os.path.join(out, f"plot_{j}.png")
-            plt.savefig(path, bbox_inches='tight'); plt.close()
+            plt.savefig(path, bbox_inches='tight')
             return path
-        except: return None
+        except:
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
 if __name__ == "__main__":
     app = AbaqusWatcherApp()
