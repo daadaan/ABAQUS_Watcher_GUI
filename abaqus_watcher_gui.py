@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt
 CONFIG_FILE = "abaqus_watcher_config.json"
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.0.1"
+CURRENT_VERSION = "1.0.2"
 
 # Performance Constants
 MAX_TAIL_BYTES = 250_000  # Maximum bytes to read from end of .sta files
@@ -335,49 +335,60 @@ class AbaqusWatcherApp(ctk.CTk):
             self.entry_dir.insert(0, dir_path)
 
     def check_updates(self):
-        """Checks for updates and handles them based on deployment type (Exe vs Script)."""
+        """Checks for updates using robust headers and version parsing."""
         def _check():
+            self.log("Checking for updates...")
             try:
                 # 1. Fetch Latest Release Info
+                # We use headers to prevent GitHub from blocking the request (403 errors)
+                headers = {"User-Agent": "Abaqus-Watcher-Client"}
                 api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-                resp = requests.get(api_url, timeout=3)
+                
+                # Using requests since your project already depends on it
+                resp = requests.get(api_url, headers=headers, timeout=6)
                 
                 if resp.status_code != 200:
-                    self.log("Update check failed.")
+                    self.log(f"Update Check Fail: {resp.status_code}")
                     return
 
                 data = resp.json()
-                latest_tag = data['tag_name'] # e.g., "v1.1.0"
-                latest_ver = latest_tag.replace('v', '')
+                latest_tag = data.get("tag_name") or data.get("name")
+                
+                if not latest_tag:
+                    self.log("Err: No version tag found.")
+                    return
+
+                # Clean versions (handle 'v1.0.0' vs '1.0.0')
+                # .lstrip("vV") removes 'v' or 'V' from the start
+                norm_latest = latest_tag.lstrip("vV").split("-")[0]
+                norm_current = CURRENT_VERSION.lstrip("vV").split("-")[0]
 
                 # 2. Compare Versions
-                if version.parse(latest_ver) <= version.parse(CURRENT_VERSION):
-                    messagebox.showinfo("Up to Date", f"You are running the latest version ({CURRENT_VERSION}).")
+                # Using packaging.version (safer than manual string comparison)
+                if version.parse(norm_latest) <= version.parse(norm_current):
+                    self.log(f"✓ Up to date ({CURRENT_VERSION})")
                     return
 
                 # ============================================
-                # UPDATE LOGIC STARTS HERE
+                # UPDATE AVAILABLE
                 # ============================================
+                self.log(f"Update found: {latest_tag}")
                 
-                # SCENARIO A: Running as Compiled EXE (Frozen)
-                # When frozen, we cannot safely self-overwrite; open Releases page instead.
+                # SCENARIO A: Compiled EXE (Frozen) -> Open Browser
                 if getattr(sys, 'frozen', False):
-                    if messagebox.askyesno("Update Available", f"New version {latest_ver} is available.\nOpen download page?"):
+                    if messagebox.askyesno("Update Available", f"New version {latest_tag} is available.\nOpen download page?"):
                         webbrowser.open(data['html_url'])
                 
-                # SCENARIO B: Running as Python Script
-                # When running as script, we can download and overwrite this .py file.
+                # SCENARIO B: Python Script -> Auto-Update
                 else:
-                    msg = (f"New version {latest_ver} is available.\n\n"
-                           "Since you are running the script, I can auto-update.\n"
-                           "Do you want to download and overwrite this script now?")
-                    
+                    msg = (f"New version {latest_tag} is available.\n\n"
+                           "I can auto-update this script file.\n"
+                           "Overwrite now?")
                     if messagebox.askyesno("Update Script", msg):
                         self.perform_script_update(latest_tag)
 
             except Exception as e:
-                print(f"Update Error: {e}")
-                self.log("Err: Update check failed.")
+                self.log(f"Update Err: {str(e)[:20]}")
         
         threading.Thread(target=_check, daemon=True).start()
 
@@ -390,7 +401,10 @@ class AbaqusWatcherApp(ctk.CTk):
             # NOTE: Ensure the filename in the URL matches your repo filename exactly!
             raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag_name}/abaqus_watcher_gui.py"
             
-            resp = requests.get(raw_url, timeout=10)
+            # Use headers here too, just to be safe
+            headers = {"User-Agent": "Abaqus-Watcher-Client"}
+            resp = requests.get(raw_url, headers=headers, timeout=10)
+            
             if resp.status_code != 200:
                 messagebox.showerror("Error", "Could not fetch update file.")
                 return
