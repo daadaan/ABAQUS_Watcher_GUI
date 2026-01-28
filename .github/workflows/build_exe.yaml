@@ -39,7 +39,6 @@ jobs:
       run: |
         pyinstaller --noconsole --onefile `
           --exclude-module pdb `
-          --exclude-module difflib `
           --exclude-module doctest `
           --name "ABAQUSWatcherGUI_v${{ steps.get_version.outputs.VERSION }}" abaqus_watcher_gui.py
 

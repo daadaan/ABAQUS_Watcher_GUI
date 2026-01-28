@@ -1,9 +1,33 @@
-# Ignore python cache files
-__pycache__/
-*.pyc
+# --- PyInstaller ---
+#  These folders are generated during the build process
+build/
+dist/
+*.spec
 
-# Ignore secrets (CRITICAL)
-secrets.py
+# --- Python ---
+#  Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+#  Virtual Environments
+venv/
+env/
+.env
+.venv/
+
+# --- VS Code ---
+#  User-specific settings and workspace state
+.vscode/
+
+# --- OS Generated ---
+#  Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+#  Mac
+.DS_Store
 
 # Ignore the log/plot files if they are generated here
 *.png
