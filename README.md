@@ -1,6 +1,6 @@
-# Abaqus Watcher GUI
+# ABAQUS Watcher GUI
 
-A modern, cross-platform Desktop Application to monitor SIMULIA Abaqus jobs remotely via Telegram. This tool watches your Abaqus working directory for lock files (`.lck`) and status files (`.sta`), providing real-time updates, convergence plots, and remote termination capabilities.
+A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remotely via Telegram. This tool watches your ABAQUS working directory for lock files (`.lck`) and status files (`.sta`), providing real-time updates, convergence plots, and remote termination capabilities.
 
 **Author:** Souvik Biswas
 **License:** MIT
@@ -30,7 +30,7 @@ This application is written in Python and runs on **Windows, Linux, and macOS**.
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/daadaan/ABAQUS_Watcher_GUI.git
-    cd ABAQUS_watcher_project
+    cd ABAQUS_Watcher_GUI
     ```
 2.  **Install dependencies:**
     ```bash
@@ -88,7 +88,7 @@ You need two things: a **Bot Token** and your **Chat ID**.
 3.  It will reply with your "Id" (a number like `123456789`). **Copy this ID.**
 
 ### 2. Configure the App
-1.  Open **Abaqus Watcher GUI**.
+1.  Open **ABAQUS Watcher GUI**.
 2.  Go to the **Config** tab.
 3.  Paste your **Bot Token** and **Chat ID**.
 4.  **ABAQUS Temp Directory:** Browse to the folder where you run your jobs (this is where `.lck` and `.sta` files appear).
