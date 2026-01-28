@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt
 CONFIG_FILE = "abaqus_watcher_config.json"
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.1"
 
 # Performance Constants
 MAX_TAIL_BYTES = 250_000  # Maximum bytes to read from end of .sta files
@@ -497,7 +497,6 @@ class AbaqusWatcherApp(ctk.CTk):
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             self.log("Settings saved.")
-            messagebox.showinfo("Saved", "Configuration updated.")
         except Exception as e:
             self.log(f"Save failed: {e}")
 
