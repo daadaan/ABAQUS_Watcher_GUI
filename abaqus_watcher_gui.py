@@ -56,7 +56,7 @@ import matplotlib.pyplot as plt
 # ================= CONFIGURATION =================
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.1.2"
+CURRENT_VERSION = "1.2.0"
 
 # Determine a safe, writable path for the config file
 # This usually maps to C:\Users\YourName\AppData\Local\ABAQUSWatcherGUI\abaqus_watcher_config.json
