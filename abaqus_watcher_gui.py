@@ -331,7 +331,7 @@ class AbaqusWatcherApp(ctk.CTk):
             return
         dir_path = filedialog.askdirectory()
         if dir_path:
-            self.entry_dir.delete(0, 'end')
+            self.entry_dir.delete(0, 'end') 
             self.entry_dir.insert(0, dir_path)
 
     def check_updates(self):
