@@ -56,7 +56,7 @@ import matplotlib.pyplot as plt
 # ================= CONFIGURATION =================
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.1.1"
+CURRENT_VERSION = "1.1.2"
 
 # Determine a safe, writable path for the config file
 # This usually maps to C:\Users\YourName\AppData\Local\ABAQUSWatcherGUI\abaqus_watcher_config.json
@@ -803,19 +803,82 @@ class AbaqusWatcherApp(ctk.CTk):
         except: pass
         return ""
     
+    def _estimate_completion(self, tail_text):
+        """
+        Parses the .sta tail to estimate time remaining based on linear extrapolation.
+        Returns a tuple: (string_message, remaining_seconds, total_estimated_seconds)
+        """
+        try:
+            # 1. Find the latest "ODB Field Frame Number X of Y"
+            # We look for the last occurrence in the text
+            frame_matches = list(re.finditer(r"ODB Field Frame Number\s+(\d+)\s+of\s+(\d+)", tail_text))
+            if not frame_matches:
+                return None, 0, 0
+            
+            latest_match = frame_matches[-1]
+            current_frame = int(latest_match.group(1))
+            total_frames = int(latest_match.group(2))
+            
+            if current_frame == 0:
+                return "Calculating...", 0, 0
+
+            # 2. Find the latest CPU TIME (HH:MM:SS) from the increment lines
+            # Pattern: Int or Float increment number followed by scientific notation numbers and a time string
+            # We look for lines like: "289463 1.000E-01 ... 01:35:45 ..."
+            # We scan the lines *before* the frame match to find the associated time
+            lines = tail_text.splitlines()
+            latest_cpu_time_str = None
+            
+            # Simple regex to find the CPU time (Col 3 usually) in data lines
+            # Looks for: [Int] [Float] [Float] [HH:MM:SS]
+            # We iterate backwards from the end of the file
+            for line in reversed(lines):
+                parts = line.split()
+                # Check if this is a data line (starts with digit, has time format in index 2 or 3)
+                if len(parts) > 3 and parts[0].isdigit() and ":" in parts[3]: 
+                    # Index 3 is CPU Time in the provided sample (Col 4 if 1-based, index 3 if 0-based)
+                    # Sample: 289463  1.000E-01 1.000E-01  01:35:45 ...
+                    latest_cpu_time_str = parts[3] 
+                    break
+            
+            if not latest_cpu_time_str:
+                return None, 0, 0
+
+            # 3. Convert CPU Time to Seconds
+            h, m, s = map(int, latest_cpu_time_str.split(':'))
+            elapsed_seconds = h * 3600 + m * 60 + s
+            
+            # 4. Extrapolate
+            seconds_per_frame = elapsed_seconds / current_frame
+            remaining_frames = total_frames - current_frame
+            remaining_seconds = seconds_per_frame * remaining_frames
+            total_est_seconds = elapsed_seconds + remaining_seconds
+            
+            # 5. Format Output
+            # Helper to format seconds to HH:MM
+            def fmt(sec):
+                hm = int(sec // 60)
+                return f"{hm // 60}h {hm % 60}m"
+
+            msg = f"⏱️ Left: {fmt(remaining_seconds)} (Tot: {fmt(total_est_seconds)})"
+            return msg, remaining_seconds, total_est_seconds
+
+        except Exception as e:
+            return None, 0, 0
+    
     def get_details(self, d, j, cached_start=""):
         """Parses the .sta file for detailed progress using cached start time."""
-        # The top-of-file start date is cached when the job is first detected.
-        # Detailed increment data is taken from the tail of the file.
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "Waiting..."
         try:
-            # Use cached start date instead of reading the file again
             start = f"{cached_start}\n" if cached_start else ""
-
-            tail_lines = self._read_tail_text(sta).splitlines()
+            tail_text = self._read_tail_text(sta) # Read once
+            tail_lines = tail_text.splitlines()
+            
             dat, fra, step = "Reading...", "No Frames", "1"
             found_dat = False
+            
+            # Parsing logic
             for line in reversed(tail_lines):
                 parts = line.split()
                 if not found_dat and len(parts) > 7 and parts[0].isdigit():
@@ -827,6 +890,13 @@ class AbaqusWatcherApp(ctk.CTk):
                     step = parts[1]
                 if found_dat and fra != "No Frames":
                     break
+            
+            # --- Time Estimate ---
+            est_msg, _, _ = self._estimate_completion(tail_text)
+            if est_msg:
+                fra += f"\n{est_msg}"
+            # -----------------------------------
+
             return f"{start}Step {step} | {dat}\n📁 {fra}"
         except: return "Error"
     
@@ -879,6 +949,15 @@ class AbaqusWatcherApp(ctk.CTk):
                     continue
                 # --------------------
 
+                time_est_str = ""
+                if is_running:
+                    est_msg, _, _ = self._estimate_completion(tail)
+                    if est_msg:
+                        # Extract just the "Left" part for the summary to save space
+                        # est_msg looks like "⏱️ Left: 4h 20m (Tot: 10h)"
+                        # We just want "⏱️ ~4h 20m left"
+                        time_est_str = f"\n{est_msg.split('(')[0].strip()}"
+
                 # Start time
                 with open(sta, 'r', encoding='utf-8', errors='ignore') as file:
                     for _ in range(START_SCAN_LINES):
@@ -906,6 +985,10 @@ class AbaqusWatcherApp(ctk.CTk):
 
             # Format Entry
             msg = f"**`{job}`**\nStatus: {status_icon}\n📅 Start: {start_t}"
+            
+            if is_running and time_est_str:
+                msg += time_est_str
+            
             if not is_running: msg += f"\n🏁 End: {end_t}"
             summary.append(msg)
             count += 1
