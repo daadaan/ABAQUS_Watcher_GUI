@@ -54,10 +54,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ================= CONFIGURATION =================
-CONFIG_FILE = "abaqus_watcher_config.json"
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.1.0"
+CURRENT_VERSION = "1.1.1"
+
+# Determine a safe, writable path for the config file
+# This usually maps to C:\Users\YourName\AppData\Local\ABAQUSWatcherGUI\abaqus_watcher_config.json
+app_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "ABAQUSWatcherGUI")
+os.makedirs(app_data_dir, exist_ok=True) # Ensure the folder exists
+CONFIG_FILE = os.path.join(app_data_dir, "abaqus_watcher_config.json")
 
 # Performance Constants
 MAX_TAIL_BYTES = 250_000  # Maximum bytes to read from end of .sta files
