@@ -38,7 +38,6 @@ jobs:
     - name: Build EXE
       run: |
         pyinstaller --noconsole --onefile `
-          --exclude-module unittest `
           --exclude-module pdb `
           --exclude-module difflib `
           --exclude-module doctest `
