@@ -108,13 +108,44 @@ The application includes a built-in update checker in the **Config** tab.
 
 ## Telegram Commands
 
-There is a **Help** tab inside the app for quick reference.
+Control and monitor your simulations remotely using these commands:
 
-| Command | Usage | Description |
-| :--- | :--- | :--- |
-| **Status (All)** | `/status all` | Scans the directory and lists **ALL** jobs (Running, Completed, and Aborted). Includes Start/End times and final status. |
-| **Status (Job)** | `/status Job-1` | Generates a **Convergence Plot** 📉 and sends detailed stats (Step, Time, KE, Total Energy) for that specific job. |
-| **Kill** | `/kill Job-1` | **Immediately terminates** the specified job on the workstation using the `abaqus terminate` command. |
+### Status Filters
+
+| Command | Description |
+| --- | --- |
+| `/status_all` | List **all** recent jobs (running, completed, and errors). |
+| `/status_running` | Show only currently **running** jobs. |
+| `/status_completed` | Show only successfully **completed** jobs. |
+| `/status_error` | Show only **failed** or aborted jobs. |
+
+### Job Control
+
+| Command | Description |
+| :--- | :--- |
+| `/status <Job-Name>` | Get detailed stats (Time, Increments) and a **convergence plot** for a specific job.<br><br>*Example:* `/status Job-1` |
+| `/kill <Job-Name>` | **Terminate** a specific job remotely.<br><br>*Example:* `/kill Job-1` |
+
+> **Note:** Job names are case-sensitive and must match the filename exactly (excluding `.lck` or `.sta`).
+
+### Setup Telegram Command Menu
+
+To make these commands appear in a clickable menu inside your Telegram chat, follow these steps:
+
+1. Open Telegram and search for **@BotFather**.
+2. Send the command `/setcommands`.
+3. Select your ABAQUS Watcher bot from the list.
+4. Copy and paste the following command list when prompted:  
+
+
+```text
+status_all - List all recent jobs
+status_running - List currently running jobs
+status_completed - List successfully finished jobs
+status_error - List failed or aborted jobs
+```
+
+> **Note:** Commands like `/status <job>` and `/kill <job>` require specific job names, so they are not included in the preset menu. You must type them manually.
 
 ---
 

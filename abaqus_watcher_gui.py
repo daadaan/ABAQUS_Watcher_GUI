@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt
 CONFIG_FILE = "abaqus_watcher_config.json"
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.1.0"
 
 # Performance Constants
 MAX_TAIL_BYTES = 250_000  # Maximum bytes to read from end of .sta files
@@ -278,8 +278,14 @@ class AbaqusWatcherApp(ctk.CTk):
         help_text = (
             "COMMANDS\n"
             "──────────────────────────────\n"
-            "/status all\n"
-            "List all running jobs.\n\n"
+            "/status_all\n"
+            "List recent jobs (any status).\n\n"
+            "/status_running\n"
+            "List currently running jobs.\n\n"
+            "/status_completed\n"
+            "List recently finished jobs.\n\n"
+            "/status_error\n"
+            "List failed/aborted jobs.\n\n"
             "/status Job-1\n"
             "Stats + Convergence Plot.\n\n"
             "/kill Job-1\n"
@@ -695,32 +701,47 @@ class AbaqusWatcherApp(ctk.CTk):
             params = {'offset': self.last_telegram_update_id + 1, 'timeout': 1}
             r = requests.get(url, params=params, timeout=3).json()
             if not r.get('ok'): return
+            
             for res in r.get('result', []):
                 self.last_telegram_update_id = res['update_id']
                 sender = str(res.get('message', {}).get('chat', {}).get('id'))
                 if sender != str(chat_id): continue
                 text = res.get('message', {}).get('text', '').strip()
                 
-                # Command Parsing
-                if text.startswith("/status"):
-                    parts = text.split()
-                    if len(parts) > 1 and parts[1].lower() != "all":
-                        # Specific Job Status - validate job name for security
+                # --- COMMAND PARSING ---
+                
+                # 1. Filters (Underscore Commands)
+                if text == "/status_all":
+                    summary = self.get_full_summary(watch_dir, filter_mode="ALL")
+                    self.send_tg(token, chat_id, f"**Recent Jobs (All):**\n\n{summary}", "🗂️")
+                
+                elif text == "/status_running":
+                    summary = self.get_full_summary(watch_dir, filter_mode="RUNNING")
+                    self.send_tg(token, chat_id, f"**Running Jobs:**\n\n{summary}", "🏃")
+
+                elif text == "/status_completed":
+                    summary = self.get_full_summary(watch_dir, filter_mode="COMPLETED")
+                    self.send_tg(token, chat_id, f"**Completed Jobs:**\n\n{summary}", "✅")
+
+                elif text == "/status_error":
+                    summary = self.get_full_summary(watch_dir, filter_mode="ERROR")
+                    self.send_tg(token, chat_id, f"**Failed/Aborted Jobs:**\n\n{summary}", "🚨")
+
+                # 2. Specific Job Lookup (Space Command)
+                elif text.startswith("/status "):
+                    parts = text.split(maxsplit=1)
+                    if len(parts) > 1:
                         job = parts[1]
                         if not self._is_safe_job_name(job):
                             self.send_tg(token, chat_id, "Invalid job name.", "⚠️")
                         else:
                             self.send_tg(token, chat_id, f"**Status:** `{job}`\n{self.get_details(watch_dir, job)}", "📈", self.gen_plot(watch_dir, job))
-                    else:
-                        # /status all -> NEW LOGIC
-                        summary_text = self.get_full_summary(watch_dir)
-                        self.send_tg(token, chat_id, f"**Recent Jobs Summary:**\n\n{summary_text}", "🗂️")
-                elif text.startswith("/kill"):
-                    parts = text.split()
+
+                # 3. Kill Command
+                elif text.startswith("/kill "):
+                    parts = text.split(maxsplit=1)
                     if len(parts) > 1:
                         job = parts[1]
-                        # Security: don't pass untrusted user input to a shell.
-                        # We also validate allowed job name characters.
                         if not self._is_safe_job_name(job):
                             self.send_tg(token, chat_id, "Invalid job name.", "⚠️")
                         else:
@@ -804,8 +825,11 @@ class AbaqusWatcherApp(ctk.CTk):
             return f"{start}Step {step} | {dat}\n📁 {fra}"
         except: return "Error"
     
-    def get_full_summary(self, watch_dir):
-        """Scans directory for all .sta files to summarize history (Running, Completed, Aborted)."""
+    def get_full_summary(self, watch_dir, filter_mode="ALL"):
+        """
+        Scans directory for .sta files and summarizes based on filter.
+        filter_mode: "ALL", "RUNNING", "COMPLETED", "ERROR"
+        """
         files = [f for f in os.listdir(watch_dir) if f.endswith('.sta')]
         if not files: return "No Abaqus jobs found."
         
@@ -813,59 +837,76 @@ class AbaqusWatcherApp(ctk.CTk):
         files.sort(key=lambda x: os.path.getmtime(os.path.join(watch_dir, x)), reverse=True)
         
         summary = []
-        # Limit to top MAX_SUMMARY_JOBS recent jobs to prevent Telegram message length errors
-        for f in files[:MAX_SUMMARY_JOBS]: 
+        count = 0
+        
+        # Iterate through files until we find MAX_SUMMARY_JOBS matches
+        for f in files:
+            if count >= MAX_SUMMARY_JOBS:
+                break
+                
             job = f.replace('.sta', '')
             lck = os.path.join(watch_dir, job + '.lck')
             sta = os.path.join(watch_dir, f)
             
             is_running = os.path.exists(lck)
             status_icon = "❓"
+            category = "UNKNOWN"
             start_t, end_t = "-", "-"
             
             try:
-                # Determine Status from tail (fast)
+                # Determine Status from tail
                 tail = self._read_tail_text(sta)
                 if is_running:
                     status_icon = "🟢 Running"
+                    category = "RUNNING"
                 elif "COMPLETED SUCCESSFULLY" in tail:
                     status_icon = "✅ Completed"
+                    category = "COMPLETED"
                 elif "ERROR" in tail or "Aborted" in tail:
                     status_icon = "❌ Aborted"
+                    category = "ERROR"
                 else:
                     status_icon = "⚠️ Stopped"
+                    category = "ERROR" # Treat generic stops as errors/attentions
 
-                # Start time: scan from top until first DATE/TIME
+                # --- FILTER CHECK ---
+                if filter_mode != "ALL" and filter_mode != category:
+                    continue
+                # --------------------
+
+                # Start time
                 with open(sta, 'r', encoding='utf-8', errors='ignore') as file:
                     for _ in range(START_SCAN_LINES):
                         line = file.readline()
-                        if not line:
-                            break
+                        if not line: break
                         if "DATE" in line and "TIME" in line:
                             parts = line.split()
                             try:
                                 d_idx, t_idx = parts.index("DATE"), parts.index("TIME")
                                 start_t = f"{parts[d_idx+1]} {parts[t_idx+1]}"
-                            except Exception:
-                                pass
+                            except: pass
                             break
 
-                # End time: scan tail for last DATE/TIME
-                for line in reversed(tail.splitlines()):
-                    if "DATE" in line and "TIME" in line:
-                        parts = line.split()
-                        try:
-                            d_idx, t_idx = parts.index("DATE"), parts.index("TIME")
-                            end_t = f"{parts[d_idx+1]} {parts[t_idx+1]}"
-                        except Exception:
-                            pass
-                        break
+                # End time
+                if not is_running:
+                    for line in reversed(tail.splitlines()):
+                        if "DATE" in line and "TIME" in line:
+                            parts = line.split()
+                            try:
+                                d_idx, t_idx = parts.index("DATE"), parts.index("TIME")
+                                end_t = f"{parts[d_idx+1]} {parts[t_idx+1]}"
+                            except: pass
+                            break
             except: continue
 
             # Format Entry
             msg = f"**`{job}`**\nStatus: {status_icon}\n📅 Start: {start_t}"
             if not is_running: msg += f"\n🏁 End: {end_t}"
             summary.append(msg)
+            count += 1
+            
+        if not summary:
+            return f"No jobs found matching: {filter_mode}"
             
         return "\n\n".join(summary)
 
