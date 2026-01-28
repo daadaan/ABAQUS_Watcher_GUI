@@ -56,7 +56,7 @@ import matplotlib.pyplot as plt
 # ================= CONFIGURATION =================
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"  # GitHub API Endpoint for updates
-CURRENT_VERSION = "1.2.0"
+CURRENT_VERSION = "1.3.1"
 
 # Determine a safe, writable path for the config file
 # This usually maps to C:\Users\YourName\AppData\Local\ABAQUSWatcherGUI\abaqus_watcher_config.json
@@ -130,7 +130,6 @@ class AbaqusWatcherApp(ctk.CTk):
 
         # --- Initialization ---
         self.create_ui()
-        self.setup_tray_icon()
         self.load_config()
 
         # --- Window Event Bindings ---
@@ -140,7 +139,7 @@ class AbaqusWatcherApp(ctk.CTk):
     def create_ui(self):
         """Builds the Tabbed Interface and Layout."""
         
-        # Initialize TabView with custom colors for seamless integration
+        # Initialize TabView
         self.tabview = ctk.CTkTabview(self, width=300, height=520, corner_radius=10,
                               fg_color=("gray95", "gray15"), 
                               segmented_button_fg_color=("gray85", "gray25"), 
@@ -157,42 +156,58 @@ class AbaqusWatcherApp(ctk.CTk):
         self.tab_settings = self.tabview.add("Config")
         self.tab_help = self.tabview.add("Help")
 
-        # --- GLOBAL FOOTER (COPYRIGHT) ---
-        # Placed in the main window scope to appear on all tabs
+        # --- GLOBAL FOOTER ---
         lbl_copyright = ctk.CTkLabel(self, text=f"© {time.localtime().tm_year} Souvik Biswas\nv{CURRENT_VERSION}", 
                                      font=("Segoe UI", 10), text_color=("gray50", "gray50"))
         lbl_copyright.pack(side="bottom", pady=(0, 5))
 
         # ================= TAB 1: MONITOR UI =================
         
-        # Status Card (Visual indicator of running state)
+        # Status Card
         self.frame_status = ctk.CTkFrame(self.tab_monitor, corner_radius=8, fg_color=("gray90", "gray13")) 
-        self.frame_status.pack(pady=(20, 15), padx=10, fill="x")
+        self.frame_status.pack(pady=(10, 5), padx=10, fill="x")
         
         self.lbl_status = ctk.CTkLabel(self.frame_status, text="STOPPED", text_color="#EF4444", font=("Roboto", 14, "bold"))
-        self.lbl_status.pack(pady=10)
+        self.lbl_status.pack(pady=8)
 
         # Main Controls
         self.btn_start = ctk.CTkButton(self.tab_monitor, text="START WATCHER", command=self.toggle_watcher, 
                                        fg_color="#15803d", hover_color="#14532d",
-                                       font=self.font_bold, height=45, corner_radius=6)
+                                       font=self.font_bold, height=36, corner_radius=6)
         self.btn_start.pack(padx=10, pady=5, fill="x")
 
         self.btn_ping = ctk.CTkButton(self.tab_monitor, text="Test Connection", command=self.ping_test, 
                                       fg_color="transparent", border_width=1, border_color=("gray70", "gray40"), 
                                       text_color=("gray10", "gray90"), hover_color=("gray90", "gray20"),
-                                      font=self.font_body, height=30)
-        self.btn_ping.pack(padx=10, pady=10, fill="x")
+                                      font=self.font_body, height=24)
+        self.btn_ping.pack(padx=10, pady=5, fill="x")
 
-        # Log Console
-        ctk.CTkLabel(self.tab_monitor, text="Live Activity", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(15, 2), fill="x")
+        # --- ACTIVE JOBS SECTION ---
+        ctk.CTkLabel(self.tab_monitor, text="Active Jobs", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(5, 0), fill="x")
 
-        # Live log console. We provide light/dark tuples for colors.
-        # Some type stubs declare `text_color` as `str`, but CTk supports tuples at runtime.
+        # Column Headers
+        self.header_frame = ctk.CTkFrame(self.tab_monitor, fg_color="transparent", height=10)
+        self.header_frame.pack(padx=15, pady=(2, 0), fill="x")
+        ctk.CTkLabel(self.header_frame, text="Job Name", font=self.font_small, text_color="gray", anchor="w").pack(side="left")
+        ctk.CTkLabel(self.header_frame, text="Time Left", font=self.font_small, text_color="gray", anchor="e").pack(side="right")
+
+        # Container Frame with FORCED HEIGHT (pack_propagate=False)
+        # This prevents the ScrollableFrame from exploding in size.
+        self.container_jobs = ctk.CTkFrame(self.tab_monitor, height=150, fg_color="transparent")
+        self.container_jobs.pack(padx=10, pady=(2, 2), fill="x")
+        self.container_jobs.pack_propagate(False) # <--- THE MAGIC FIX
+
+        self.frame_jobs_list = ctk.CTkScrollableFrame(self.container_jobs, fg_color=("white", "gray20"))
+        self.frame_jobs_list.pack(fill="both", expand=True)
+
+        # --- LIVE ACTIVITY SECTION ---
+        ctk.CTkLabel(self.tab_monitor, text="Live Activity", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(5, 2), fill="x")
+
+        # Console (Height 70px)
         self.console = ctk.CTkTextbox(
             self.tab_monitor,
             width=280,
-            height=200,
+            height=90,
             font=self.font_mono,
             fg_color=("white", "black"),
             text_color=("black", "white"),  # type: ignore[arg-type]
@@ -200,19 +215,16 @@ class AbaqusWatcherApp(ctk.CTk):
             border_width=1,
             border_color=("gray80", "gray30"),
         )
-        self.console.pack(padx=5, pady=0, fill="both", expand=True)
+        self.console.pack(padx=5, pady=(0, 0), fill="x")
         self.console.configure(state="disabled")
 
         # ================= TAB 2: CONFIG UI =================
-        
         self.frame_cfg = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
         self.frame_cfg.pack(fill="both", expand=True, padx=5)
 
-        # 1. Credentials Input (Masked)
         self.add_input(self.frame_cfg, "Bot Token", "entry_token", secret=True)
         self.add_input(self.frame_cfg, "Chat ID", "entry_chat_id", secret=True)
 
-        # 2. Directory Selector with Browse Button
         ctk.CTkLabel(self.frame_cfg, text="ABAQUS Temp Directory", anchor="w", font=self.font_bold, text_color=("gray50", "gray50")).pack(padx=5, pady=(5,0), fill="x")
         
         self.frame_dir = ctk.CTkFrame(self.frame_cfg, fg_color="transparent")
@@ -225,10 +237,8 @@ class AbaqusWatcherApp(ctk.CTk):
                                         fg_color=("gray80", "gray30"), hover_color=("gray70", "gray40"), text_color=("black", "white"))
         self.btn_browse.pack(side="right")
 
-        # 3. Settings
         self.add_input(self.frame_cfg, "Heartbeat (s)", "entry_heartbeat", default="3600")
 
-        # 4. Appearance Options
         self.frame_opts = ctk.CTkFrame(self.frame_cfg, fg_color="transparent")
         self.frame_opts.pack(fill="x", pady=15)
         
@@ -241,39 +251,31 @@ class AbaqusWatcherApp(ctk.CTk):
                                          variable=self.var_tray_enabled, height=24, width=50)
         self.switch_tray.pack(padx=5, pady=(5, 10), anchor="w")
 
-        # Save Button
         self.btn_save = ctk.CTkButton(self.tab_settings, text="Save Settings", command=self.save_config, 
                                       fg_color="#2563EB", hover_color="#3B82F6", 
                                       font=self.font_bold, height=40)
         self.btn_save.pack(side="top", padx=5, pady=(5, 5), fill="x")
 
-        # --- UTILITY FOOTER (Config Tab) ---
         self.frame_utils = ctk.CTkFrame(self.tab_settings, fg_color="transparent")
         self.frame_utils.pack(side="bottom", fill="x", pady=(10, 0))
-
-        # Grid Layout forFooter buttons
         self.frame_utils.columnconfigure(0, weight=1)
         self.frame_utils.columnconfigure(1, weight=1)
 
-        # Button 1: Clear Data
         btn_clear = ctk.CTkButton(self.frame_utils, text="Clear Data", command=self.clear_config,
                                   fg_color="transparent", border_width=2, border_color="#EF4444", text_color="#EF4444",
                                   hover_color=("#FEE2E2", "#450a0a"), font=self.font_small, height=28)
         btn_clear.grid(row=0, column=0, padx=5, pady=2, sticky="ew")
 
-        # Button 2: Check Updates
         btn_update = ctk.CTkButton(self.frame_utils, text="Check Updates", command=self.check_updates,
                                    fg_color="transparent", border_width=2, border_color="#3B82F6", text_color="#3B82F6",
                                    hover_color=("#DBEAFE", "#172554"), font=self.font_small, height=28)
         btn_update.grid(row=0, column=1, padx=5, pady=2, sticky="ew")
 
-        # Link 1: GitHub Repo
         btn_repo = ctk.CTkButton(self.frame_utils, text="GitHub Repo", 
                                  fg_color="transparent", hover=False, text_color=("gray50", "gray60"), font=("Segoe UI", 12, "underline"),
                                  height=20, command=lambda: webbrowser.open(f"https://github.com/{GITHUB_REPO}"))
         btn_repo.grid(row=1, column=0, padx=5, pady=(2,0), sticky="ew")
 
-        # Link 2: Report Issue
         btn_issue = ctk.CTkButton(self.frame_utils, text="Report Issue", 
                                   fg_color="transparent", hover=False, text_color="#EF4444", font=("Segoe UI", 12, "underline"),
                                   height=20, command=lambda: webbrowser.open(f"https://github.com/{GITHUB_REPO}/issues"))
@@ -443,26 +445,32 @@ class AbaqusWatcherApp(ctk.CTk):
             messagebox.showerror("Update Error", f"Failed to overwrite script:\n{e}")
 
     # --- SYSTEM TRAY LOGIC ---
-    def setup_tray_icon(self):
-        """Configures the background system tray icon."""
+    def _create_tray_icon(self):
+        """Creates a FRESH instance of the system tray icon."""
+        # 1. Draw the icon image
         image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         draw.ellipse([10, 10, 54, 54], fill="#6769a2") 
         
+        # 2. Define Menu
         menu = pystray.Menu(
             pystray.MenuItem("Open Monitor", self.show_window_from_tray, default=True),
             pystray.MenuItem("Quit", self.quit_app)
         )
-        self.tray_icon = pystray.Icon("AbaqusWatcher", image, "Abaqus Watcher", menu)
+        
+        # 3. Return new instance (Do not assign to self.tray_icon yet)
+        return pystray.Icon("AbaqusWatcherGUI", image, "Abaqus Watcher GUI", menu)
 
     def check_minimize_event(self, event):
         """Intercepts window minimize event to hide to tray if enabled."""
-        if self.state() == 'iconic' and self.var_tray_enabled.get() and self.tray_icon is not None:
+        if self.state() == 'iconic' and self.var_tray_enabled.get():
+            # 1. Hide Window
             self.withdraw()
-            if not self.tray_thread or not self.tray_thread.is_alive():
-                # Run the tray icon loop in a daemon thread so it doesn't block app exit.
-                self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
-                self.tray_thread.start()
+            
+            # 2. Create and Start a FRESH icon instance
+            self.tray_icon = self._create_tray_icon()
+            self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+            self.tray_thread.start()
 
     def show_window_from_tray(self, icon=None, item=None):
         if self.tray_icon is not None:
