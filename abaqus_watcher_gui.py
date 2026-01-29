@@ -1,24 +1,83 @@
+# Copyright 2026 Souvik Biswas
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 ABAQUS Watcher GUI
 ==================
 
-A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remotely via Telegram.
-This tool watches a specified directory for ABAQUS lock files (.lck) and status files (.sta),
-providing real-time updates, convergence plots, and remote termination capabilities.
+A modern, cross-platform Desktop GUI application for monitoring SIMULIA ABAQUS simulation jobs
+remotely via Telegram Bot API. Provides real-time job status tracking, convergence analysis,
+time estimation, and remote control capabilities.
 
-Features:
-- **Real-time Monitoring:** Detects new jobs, completions, and errors.
-- **Remote Control:** Check status or kill jobs via Telegram commands.
-- **Convergence Plots:** Generates Step Time vs. Increment Size graphs.
-- **Secure Storage:** Uses Windows Credential Locker (Keyring) for sensitive tokens.
-- **System Tray:** Minimizes to background for unobtrusive monitoring.
+Overview
+--------
+This application watches a designated directory for ABAQUS lock files (.lck) and status files
+(.sta), parsing job progress and sending notifications through a Telegram bot. It runs
+unobtrusively in the system tray with a customizable dark/light mode interface.
 
-Dependencies:
-    pip install customtkinter packaging requests matplotlib keyring pystray Pillow
+Key Features
+------------
+- **Real-time Job Monitoring:** Automatically detects job starts, completions, and failures
+- **Time Estimation:** Linear extrapolation of remaining job duration based on ODB frame progress
+- **Convergence Plots:** Generates matplotlib graphs showing increment performance
+- **Remote Control:** Execute Telegram commands from anywhere to check status or terminate jobs
+- **Secure Credential Storage:** OS-level keyring integration (Windows Credential Manager, macOS
+  Keychain, Linux Secret Service) - no plain-text tokens
+- **System Tray Integration:** Minimize to tray for background operation without taskbar clutter
+- **Single Instance Enforcement:** Prevents multiple copies from running simultaneously
+- **Deployment-Aware Updates:** Script mode supports auto-updates; EXE mode provides download links
+- **Heartbeat Notifications:** Periodic status updates for long-running jobs (configurable interval)
 
-Author: Souvik Biswas
-License: MIT
+Platform Support
+----------------
+- **Primary:** Windows 10/11 (fully tested)
+- **Compatible:** Linux, macOS (community tested)
+- **Python:** 3.10+ required (tested with 3.10, 3.11, 3.12, 3.14)
+
+Dependencies
+------------
+Install all requirements with:
+    pip install -r requirements.txt
+
+Core packages:
+    - customtkinter (modern themed Tkinter widgets)
+    - packaging (semantic version comparison)
+    - requests (Telegram API, GitHub API)
+    - matplotlib (convergence plot generation)
+    - keyring (OS-level credential storage)
+    - pystray (system tray functionality)
+    - Pillow (image processing for icons)
+
+Usage
+-----
+Run the application:
+    python abaqus_watcher_gui.py
+
+Or use the pre-built executable (Windows only):
+    ABAQUS_Watcher_GUI.exe
+
+For complete setup instructions and Telegram bot configuration, see:
+    https://github.com/daadaan/ABAQUS_Watcher_GUI#readme
+
+Author & License
+----------------
+Author: Souvik Biswas (@daadaan)
+License: Apache License 2.0
 Repository: https://github.com/daadaan/ABAQUS_Watcher_GUI
+
+For bug reports and feature requests:
+    https://github.com/daadaan/ABAQUS_Watcher_GUI/issues
 """
 
 from __future__ import annotations
@@ -79,7 +138,7 @@ GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
 
 # Semantic Version String (format: "MAJOR.MINOR.PATCH")
 # CRITICAL: Must match Git release tags (without 'v' prefix) for update detection
-CURRENT_VERSION = "1.4.0"
+CURRENT_VERSION = "2.0.0"
 
 # Configuration File Location Strategy
 # WHY %LOCALAPPDATA%:

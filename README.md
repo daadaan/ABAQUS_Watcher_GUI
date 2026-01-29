@@ -3,7 +3,7 @@
 A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remotely via Telegram. This tool watches your ABAQUS working directory for lock files (`.lck`) and status files (`.sta`), providing real-time updates, convergence plots, and remote termination capabilities.
 
 **Author:** Souvik Biswas (@daadaan)  
-**License:** MIT
+**License:** Apache 2.0
 
 ---
 
@@ -260,5 +260,5 @@ status_error - List failed or aborted jobs
 
 ## License
 
-This project is licensed under the **MIT License**.  
+This project is licensed under the **Apache License 2.0**.  
 Copyright (c) 2026, Souvik Biswas (daadaan).
