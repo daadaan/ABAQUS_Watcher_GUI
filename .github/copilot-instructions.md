@@ -9,7 +9,8 @@ This is a cross-platform Desktop GUI application (Python) that monitors SIMULIA 
 - Runs unobtrusively in the system tray with a modern dark/light mode UI
 
 **Target Platform:** Windows (primary), with Linux/macOS compatibility  
-**Python Version:** 3.10+  
+**Python Version:** 3.10+ (tested with 3.10, 3.11, 3.12, 3.14)  
+**Current Version:** 1.4.0  
 **Architecture:** Single-threaded GUI with background worker thread for monitoring
 
 ## Tech Stack & Libraries
@@ -56,8 +57,14 @@ This is a cross-platform Desktop GUI application (Python) that monitors SIMULIA 
 
 ### Version Management
 * **Current Version:** Defined in `CURRENT_VERSION` constant at module top
-* **Format:** Semantic versioning: `"MAJOR.MINOR.PATCH"` (e.g., `"1.3.2"`)
+* **Format:** Semantic versioning: `"MAJOR.MINOR.PATCH"` (e.g., `"1.4.0"`)
 * **Git Tags:** Releases tagged as `vX.Y.Z` (with 'v' prefix)
+* **Critical:** Version string in code MUST NOT include 'v' prefix (enables comparison)
+* **Update Checklist:** When releasing:
+  1. Update `CURRENT_VERSION` in `abaqus_watcher_gui.py`
+  2. Update version in README.md if mentioned
+  3. Create Git tag: `git tag v1.4.0 && git push origin v1.4.0`
+  4. GitHub Actions will auto-build release artifacts
 
 ## Coding Standards & Patterns
 
@@ -68,7 +75,7 @@ This is a cross-platform Desktop GUI application (Python) that monitors SIMULIA 
 # Application Identity
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
-CURRENT_VERSION = "1.3.2"
+CURRENT_VERSION = "1.4.0"  # MUST match Git release tags (without 'v' prefix)
 
 # Performance Tuning
 MAX_TAIL_BYTES = 250_000      # Tail read limit for .sta files
@@ -168,8 +175,31 @@ Background Threads (Daemon)
 
 **Anti-Patterns:**
 - Never call `.destroy()` on widgets from background threads
-- Never use `.get()` on Entry widgets from background threads
+- Never use `.get()` on Entry widgets from background threads (read once at thread start)
 - Never create new widgets in background threads
+- Never call `.configure()` on widgets from background threads
+- Never access `.winfo_*()` methods from background threads
+
+**Common Mistakes:**
+```python
+# ❌ WRONG - Reading widget state from background thread
+def worker():
+    while True:
+        dir_path = self.entry_dir.get()  # BAD: Widget access
+        # Process files
+        time.sleep(3)
+
+# ✅ CORRECT - Read widget state once before thread starts
+def start_worker():
+    dir_path = self.entry_dir.get()  # Read in main thread
+    thread = threading.Thread(target=lambda: self.worker(dir_path), daemon=True)
+    thread.start()
+
+def worker(self, dir_path):
+    while not self.stop_event.is_set():
+        # Use cached dir_path parameter
+        time.sleep(3)
+```
 
 ### 4. File Parsing Logic
 
@@ -342,6 +372,30 @@ def gen_plot(self, job_name: str, data: list) -> Optional[str]:
 - Never call `plt.show()` (blocks GUI thread)
 - Never skip `plt.close(fig)` after saving
 - Never use global pyplot state without explicit figure management
+- Never import pyplot before setting backend
+
+**Common Issues & Solutions:**
+
+1. **"Agg backend" not set early enough:**
+   ```python
+   # ❌ WRONG - Backend set after import
+   import matplotlib.pyplot as plt
+   matplotlib.use('Agg')  # Too late!
+   
+   # ✅ CORRECT - Backend set before pyplot import
+   import matplotlib
+   matplotlib.use('Agg')
+   import matplotlib.pyplot as plt
+   ```
+
+2. **Memory leak from unclosed figures:**
+   - Symptoms: Memory usage grows ~5MB per plot
+   - Cause: Missing `plt.close(fig)` in finally block
+   - Solution: Always use try-finally pattern shown above
+
+3. **"Figure is not a valid file" error:**
+   - Cause: Trying to pass Figure object instead of file path
+   - Solution: Return file path string from gen_plot(), not Figure object
 
 ## Security Notes
 
@@ -360,8 +414,12 @@ def _is_safe_job_name(self, name: str) -> bool:
     if not name:
         return False
     # Only allow alphanumeric, dots, underscores, hyphens
+    # Alternative implementation using regex (both are equivalent):
+    # return bool(re.fullmatch(r"[A-Za-z0-9._-]+", name))
     return all(c.isalnum() or c in '._-' for c in name)
 ```
+
+**⚠️ MANDATORY USAGE:** This validation MUST be called before ANY file operation or path construction using user-supplied job names. See "Command Injection Prevention" section below for related security measures.
 
 **Why This Matters:**
 ```python
@@ -442,6 +500,45 @@ except Exception as e:
 - Never send full exception tracebacks via Telegram
 - Never include absolute paths in user-facing messages
 - Never expose config file locations in error messages
+- Never log sensitive data (tokens, chat IDs) even in error messages
+
+**Error Handling Patterns:**
+
+1. **Background Thread Errors (Non-Fatal):**
+   ```python
+   # Catch all exceptions to prevent thread death
+   try:
+       # Process job
+       pass
+   except Exception as e:
+       self.log(f"Job processing error: {type(e).__name__}")
+       # Thread continues running
+   ```
+
+2. **Configuration Errors (Fatal - Stop Watcher):**
+   ```python
+   if not os.path.exists(watch_dir):
+       self.log("Error: Directory not found")
+       self.after(0, self.toggle_watcher)  # Stop from main thread
+       return
+   ```
+
+3. **Network Errors (Silent Retry):**
+   ```python
+   try:
+       response = requests.get(url, timeout=3)
+   except requests.RequestException:
+       pass  # Retry on next iteration (3s later)
+   ```
+
+4. **File I/O Errors (Graceful Degradation):**
+   ```python
+   try:
+       with open(sta_file, 'r') as f:
+           data = f.read()
+   except (FileNotFoundError, PermissionError):
+       return ""  # Return empty string, caller handles
+   ```
 
 ## Type Checker Notes
 
@@ -530,15 +627,30 @@ else:
 - `packaging.version` dependency compatibility
 - `keyring` and `pystray` C-API requirements
 
-**Pre-Release Versions:**
-- Avoid Python 3.13 alpha/beta builds
-- C extensions (`pystray`, `keyring`) may not have wheels
-- Causes build failures in GitHub Actions
+**Confirmed Working Versions:**
+- ✅ Python 3.10 (Windows/Linux/macOS)
+- ✅ Python 3.11 (Windows/Linux/macOS)
+- ✅ Python 3.12 (Windows/Linux/macOS)
+- ✅ Python 3.14 (Windows - confirmed by user)
 
-**Testing Matrix:**
-- Primary: Python 3.10 (Windows 10/11)
-- Secondary: Python 3.11 (Windows/Linux)
-- Best-effort: Python 3.12 (may work, not guaranteed)
+**Important Notes:**
+- Avoid pre-release (alpha/beta) builds due to C extension compatibility
+- For Python 3.13+: Ensure all dependencies have compatible wheels
+- If encountering build errors, verify `pystray` and `keyring` wheel availability
+
+**Dependency Installation Issues:**
+```bash
+# If pip install fails for C extensions:
+# 1. Check wheel availability:
+pip index versions pystray
+pip index versions keyring
+
+# 2. Update pip/setuptools:
+pip install --upgrade pip setuptools wheel
+
+# 3. Install from requirements.txt:
+pip install -r requirements.txt
+```
 
 ### Configuration File Location
 **Windows:**
@@ -583,6 +695,40 @@ remaining = estimated_total - elapsed
 - Requires ODB frames (some jobs don't generate them)
 - Inaccurate for jobs <10% complete
 
+### Performance Monitoring
+
+**Key Performance Indicators:**
+- Poll cycle time: Should be <100ms for typical workloads
+- Memory usage: Should stabilize <50MB after startup
+- Tail read time: Should be <50ms for files up to 50MB
+
+**Performance Bottlenecks to Avoid:**
+```python
+# ❌ WRONG - Reading entire file repeatedly
+for job in active_jobs:
+    with open(f"{job}.sta", 'r') as f:
+        lines = f.readlines()  # Reads entire file every 3s!
+
+# ✅ CORRECT - Tail reading with caching
+for job in active_jobs:
+    if job not in self.job_cache:
+        self.job_cache[job] = self._read_header_once(job)
+    tail = self._read_tail_text(f"{job}.sta")  # Only last 250KB
+```
+
+**Memory Leak Detection:**
+- Monitor console line count (should not exceed MAX_CONSOLE_LINES)
+- Check matplotlib figure cleanup (memory should not grow linearly with plot count)
+- Verify dictionary cleanup (job_heartbeats should remove finished jobs)
+
+**Optimization Checklist:**
+- [ ] Use tail reading for all .sta file parsing
+- [ ] Cache header data after first read
+- [ ] Limit job history to MAX_SUMMARY_JOBS
+- [ ] Close matplotlib figures in finally blocks
+- [ ] Trim console logs when exceeding MAX_CONSOLE_LINES
+- [ ] Remove finished jobs from tracking dictionaries
+
 ---
 
 ## Quick Reference Checklist
@@ -605,3 +751,96 @@ remaining = estimated_total - elapsed
 - [ ] Test with missing credentials
 - [ ] Test update check with no network
 - [ ] Test system tray open/close/minimize
+- [ ] Test with job names containing special characters
+- [ ] Test with directory deletion during monitoring
+- [ ] Test memory usage over 1+ hour runtime
+- [ ] Test with multiple simultaneous jobs (5+)
+
+---
+
+## Debugging & Logging Best Practices
+
+### Console Logging Guidelines
+
+**Do Log:**
+- Job lifecycle events (started, completed, failed)
+- Configuration errors
+- Network connectivity issues
+- Update check results
+- User actions (watcher start/stop, settings saved)
+
+**Don't Log:**
+- Sensitive credentials (tokens, chat IDs)
+- Full exception tracebacks (use exception type only)
+- Absolute file paths (use relative or job names only)
+- Every poll cycle (too verbose)
+
+**Log Message Format:**
+```python
+# ✅ GOOD - Concise, informative, no sensitive data
+self.log("Job-1 started")  # Short timestamp added automatically
+self.log("Err: Check config")  # Generic error message
+self.log(f"Processing failed: {type(e).__name__}")  # Exception type only
+
+# ❌ BAD - Too verbose, exposes sensitive data
+self.log(f"[{datetime.now().isoformat()}] Starting job monitoring in C:\\Users\\...")
+self.log(f"Bot token: {token}")
+self.log(f"Full exception: {traceback.format_exc()}")
+```
+
+### Debugging Techniques
+
+**1. Thread-Safe Print Debugging:**
+```python
+# Use self.log() instead of print() for thread safety
+def run_loop(self):
+    self.log("DEBUG: Monitoring started")  # Visible in UI console
+    # ... do work
+```
+
+**2. Temporary Verbose Mode:**
+```python
+# Add at module level for temporary debugging
+DEBUG_MODE = False
+
+# In methods
+if DEBUG_MODE:
+    self.log(f"DEBUG: Processing {job_name}, {len(active)} active jobs")
+```
+
+**3. Exception Context:**
+```python
+# Catch specific exceptions for better error messages
+try:
+    data = json.load(f)
+except json.JSONDecodeError as e:
+    self.log(f"Config parse error at line {e.lineno}")
+except FileNotFoundError:
+    self.log("Config file missing")
+```
+
+### Common Issues & Solutions
+
+**Issue:** Watcher stops unexpectedly
+- Check: Exception in run_loop() that wasn't caught
+- Solution: Wrap entire loop body in try-except
+
+**Issue:** UI freezes during operation
+- Check: Long-running operation in main thread
+- Solution: Move operation to background thread, use self.after() for UI updates
+
+**Issue:** Jobs not detected
+- Check: Directory path, file permissions, .lck file presence
+- Solution: Add debug log in directory scan loop
+
+**Issue:** Telegram not responding
+- Check: Network connectivity, bot token, chat ID, firewall
+- Solution: Use "Test Connection" button, verify credentials
+
+**Issue:** Time estimates always "Calculating..."
+- Check: ODB output frames in .sta file, parsing regex
+- Solution: Verify "ODB Field Frame Number" appears in tail
+
+**Issue:** Memory grows over time
+- Check: Matplotlib figure cleanup, console line trimming, dictionary cleanup
+- Solution: Verify plt.close(fig) and MAX_CONSOLE_LINES enforcement
