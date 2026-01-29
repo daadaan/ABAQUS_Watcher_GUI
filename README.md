@@ -11,6 +11,7 @@ A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remo
 
 - **Smart Notifications:** To prevent spamming your phone, **all routine updates (Heartbeats, Status checks) are sent silently.** You will only receive a sound/vibration notification for critical events: **Job Completion** or **Job Abort**.
 - **Real-time Monitoring:** Automatically detects when jobs start, finish, or error out.
+- **Time Estimation:** Uses linear extrapolation based on ODB frame output to estimate time remaining for running jobs. Estimates are displayed in both the app interface and Telegram messages.
 - **Convergence Plotting:** Generates and sends a graph (Step Time vs. Increment Size) via Telegram to visualize stability.
 - **Remote Control:** Check status or kill jobs remotely using Telegram commands.
 - **Secure Storage:** Credentials (Bot Token, Chat ID) are encrypted and stored in the **Windows Credential Locker**, not in plain-text files.
@@ -106,6 +107,23 @@ The application includes a built-in update checker in the **Config** tab.
 
 ---
 
+## How Time Estimation Works
+
+The app estimates job completion time using **linear extrapolation** based on ABAQUS's ODB frame output:
+
+1. **Tracks Progress:** Monitors the current frame number vs. total frames from the `.sta` file.
+2. **Measures Elapsed Time:** Extracts CPU time from increment data.
+3. **Calculates Rate:** Determines average time per frame.
+4. **Projects Completion:** Multiplies remaining frames by the average rate.
+
+**Example Output:**
+- In App: `"1h 20m"` (time remaining)
+- In Telegram: `"⏱️ Left: 1h 20m (Tot: 3h 45m)"` (remaining + total estimated)
+
+**Note:** Estimates appear as `"Calculating..."` until enough data is available (typically after the first frame output). The accuracy depends on job consistency—highly variable increment sizes may produce less reliable estimates.
+
+---
+
 ## Telegram Commands
 
 Control and monitor your simulations remotely using these commands:
@@ -114,8 +132,8 @@ Control and monitor your simulations remotely using these commands:
 
 | Command | Description |
 | --- | --- |
-| `/status_all` | List **all** recent jobs (running, completed, and errors). |
-| `/status_running` | Show only currently **running** jobs. |
+| `/status_all` | List **all** recent jobs (running, completed, and errors). Shows time estimates for active jobs. |
+| `/status_running` | Show only currently **running** jobs with estimated time remaining. |
 | `/status_completed` | Show only successfully **completed** jobs. |
 | `/status_error` | Show only **failed** or aborted jobs. |
 
@@ -123,7 +141,7 @@ Control and monitor your simulations remotely using these commands:
 
 | Command | Description |
 | :--- | :--- |
-| `/status <Job-Name>` | Get detailed stats (Time, Increments) and a **convergence plot** for a specific job.<br><br>*Example:* `/status Job-1` |
+| `/status <Job-Name>` | Get detailed stats (Time, Increments, **Estimated Time Remaining**) and a **convergence plot** for a specific job.<br><br>*Example:* `/status Job-1` |
 | `/kill <Job-Name>` | **Terminate** a specific job remotely.<br><br>*Example:* `/kill Job-1` |
 
 > **Note:** Job names are case-sensitive and must match the filename exactly (excluding `.lck` or `.sta`).
