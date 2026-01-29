@@ -1346,11 +1346,11 @@ class AbaqusWatcherApp(ctk.CTk):
         - Rationale: Standard filename-safe characters across Windows/Linux
         
         BLOCKED CHARACTERS (Examples):
-        - Path separators: / \ (prevents directory traversal)
+        - Path separators: / \\ (prevents directory traversal)
         - Shell metacharacters: ; | & $ ` ( ) < > (prevents command injection)
         - Wildcards: * ? [ ] { } (prevents glob expansion)
         - Whitespace: space, tab, newline (prevents argument splitting)
-        - Null byte: \x00 (prevents filename truncation)
+        - Null byte: \\x00 (prevents filename truncation)
         
         TYPICAL VALID JOB NAMES:
         - "Job-1" ✓
@@ -1557,7 +1557,7 @@ class AbaqusWatcherApp(ctk.CTk):
         - First 10% of job (not enough data)
         
         PARSING STRATEGY:
-        - ODB Frame Pattern: "ODB Field Frame Number\s+(\d+)\s+of\s+(\d+)"
+        - ODB Frame Pattern: "ODB Field Frame Number\\s+(\\d+)\\s+of\\s+(\\d+)"
         - CPU Time Pattern: HH:MM:SS in increment summary lines
         - Scan backwards from tail to find latest data
         - Multiple frame entries may exist (use last one)
