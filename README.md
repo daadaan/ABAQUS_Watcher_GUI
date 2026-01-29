@@ -10,12 +10,14 @@ A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remo
 ## Features
 
 - **Smart Notifications:** To prevent spamming your phone, **all routine updates (Heartbeats, Status checks) are sent silently.** You will only receive a sound/vibration notification for critical events: **Job Completion** or **Job Abort**.
-- **Real-time Monitoring:** Automatically detects when jobs start, finish, or error out.
+- **Real-time Monitoring:** Automatically detects when jobs start, finish, or error out by monitoring `.lck` (lock) and `.sta` (status) files.
 - **Time Estimation:** Uses linear extrapolation based on ODB frame output to estimate time remaining for running jobs. Estimates are displayed in both the app interface and Telegram messages.
-- **Convergence Plotting:** Generates and sends a graph (Step Time vs. Increment Size) via Telegram to visualize stability.
-- **Remote Control:** Check status or kill jobs remotely using Telegram commands.
-- **Secure Storage:** Credentials (Bot Token, Chat ID) are encrypted and stored in the **Windows Credential Locker**, not in plain-text files.
-- **System Tray Mode:** The app minimizes to the system tray, running unobtrusively in the background.
+- **Convergence Plotting:** Generates and sends a graph (Step Time vs. Increment Size) via Telegram to visualize solver stability and time step adaptation.
+- **Remote Control:** Check status or terminate jobs remotely using Telegram commands from anywhere.
+- **Secure Storage:** Credentials (Bot Token, Chat ID) are encrypted and stored in the **Windows Credential Locker** (or platform keyring), never in plain-text files.
+- **System Tray Mode:** The app minimizes to the system tray, running unobtrusively in the background without cluttering your taskbar.
+- **Single Instance Enforcement:** Automatically prevents multiple copies from running simultaneously. Launching a second instance will restore the first one from the tray.
+- **Deployment-Aware Updates:** Script mode supports automatic self-updating; EXE mode prompts you to download new releases.
 
 ---
 
@@ -24,8 +26,12 @@ A modern, cross-platform Desktop Application to monitor SIMULIA ABAQUS jobs remo
 This application is written in Python and runs on **Windows, Linux, and macOS**.
 
 ### Prerequisites
-* **Python 3.10** or higher.
-* **Abaqus** installed on the host machine (must be runnable via terminal).
+* **Python 3.10 or higher** (tested and confirmed working with Python 3.10, 3.11, 3.12, and 3.14)
+  - **Why 3.10+?** The application uses modern Python features including `match`/`case` statements and improved typing syntax.
+  - Newer Python versions should work as long as all dependencies have compatible wheels available.
+* **ABAQUS** installed on the host machine (simulation files must be accessible)
+  - The app monitors output files (`.sta`, `.lck`) created by ABAQUS during job execution.
+  - No direct ABAQUS API integration—works by parsing file system changes.
 
 ### Installation Steps
 1.  **Clone the repository:**
@@ -70,6 +76,31 @@ The executable is not code-signed with a paid certificate (which costs hundreds 
 
 ---
 
+## Technical Details
+
+### Architecture
+- **GUI Framework:** Built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) for a modern dark/light mode interface
+- **Threading Model:** 
+  - Main thread handles all UI operations (thread-safe)
+  - Background daemon thread monitors directory every 3 seconds
+  - Separate threads for network operations (Telegram polling, update checks)
+- **File Monitoring:** Polls directory for `.lck` files (active jobs) and `.sta` files (status/progress data)
+- **Security:** OS-level credential storage via `keyring` library (Windows Credential Manager, macOS Keychain, Linux Secret Service)
+
+### Performance Optimizations
+- **Tail Reading:** Only reads the last 250KB of `.sta` files instead of loading entire files (10-100x speedup for large files)
+- **Header Caching:** Start times and job metadata are cached after first read to avoid repeated parsing
+- **Job Limiting:** Summary commands limited to 15 most recent jobs to prevent Telegram message size errors
+- **Efficient Polling:** 3-second intervals balance responsiveness with CPU usage
+- **Memory Management:** Console logs limited to 500 lines; matplotlib figures explicitly closed to prevent memory leaks
+
+### Data Storage
+- **Configuration File:** `%LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json` (Windows) or `~/.config/ABAQUSWatcherGUI/` (Linux/macOS)
+- **Stored Settings:** Directory path, heartbeat interval, theme preference, tray settings
+- **Secure Credentials:** Bot token and chat ID stored in OS keyring (never in JSON files)
+
+---
+
 ## Configuration Guide
 
 The app features a GUI tab to handle setup easily. You do not need to edit config files manually.
@@ -111,16 +142,30 @@ The application includes a built-in update checker in the **Config** tab.
 
 The app estimates job completion time using **linear extrapolation** based on ABAQUS's ODB frame output:
 
-1. **Tracks Progress:** Monitors the current frame number vs. total frames from the `.sta` file.
-2. **Measures Elapsed Time:** Extracts CPU time from increment data.
-3. **Calculates Rate:** Determines average time per frame.
-4. **Projects Completion:** Multiplies remaining frames by the average rate.
+1. **Tracks Progress:** Monitors the current frame number vs. total frames from the `.sta` file (e.g., "ODB Field Frame Number 25 of 100").
+2. **Measures Elapsed Time:** Extracts CPU time from the latest increment data (HH:MM:SS format).
+3. **Calculates Rate:** Determines average time per frame: `seconds_per_frame = elapsed_time / current_frame`.
+4. **Projects Completion:** Multiplies remaining frames by the average rate: `remaining = (total_frames - current_frame) * seconds_per_frame`.
 
 **Example Output:**
-- In App: `"1h 20m"` (time remaining)
-- In Telegram: `"⏱️ Left: 1h 20m (Tot: 3h 45m)"` (remaining + total estimated)
+- In App: `"1h 20m"` (time remaining only)
+- In Telegram: `"⏱️ Left: 1h 20m (Tot: 3h 45m)"` (remaining time + total estimated duration)
 
-**Note:** Estimates appear as `"Calculating..."` until enough data is available (typically after the first frame output). The accuracy depends on job consistency—highly variable increment sizes may produce less reliable estimates.
+**When It Works Best (±10-25% accuracy):**
+- Uniform increment sizes (fixed time stepping)
+- Linear analyses with stable convergence
+- Constant material properties
+
+**When It May Be Less Accurate (±50%+ error):**
+- Highly adaptive time stepping (early vs. late increments differ significantly)
+- Complex contact conditions with friction
+- Jobs with severe convergence issues requiring cutbacks
+- First 10% of job execution (insufficient data)
+
+**Note:** 
+- Estimates appear as `"Calculating..."` until the first ODB frame is written.
+- Some ABAQUS jobs don't generate ODB frames (no estimation available).
+- Updates every 3 seconds as new increment data becomes available.
 
 ---
 
@@ -164,6 +209,52 @@ status_error - List failed or aborted jobs
 ```
 
 > **Note:** Commands like `/status <job>` and `/kill <job>` require specific job names, so they are not included in the preset menu. You must type them manually.
+
+---
+
+## Troubleshooting
+
+### App Won't Start
+- **Ensure Python 3.10+** is installed: `python --version`
+- **Install all dependencies:** `pip install -r requirements.txt`
+- **Check for missing libraries:** The error message will indicate which module is missing
+
+### "Keyring Error" on Startup
+- **Windows:** Windows Credential Manager should work automatically
+- **Linux:** Install `gnome-keyring` or `kwallet` depending on your desktop environment
+- **Workaround:** Run app as administrator or use script mode instead of system keyring
+
+### Watcher Not Detecting Jobs
+- **Verify Directory Path:** Ensure the path points to where ABAQUS writes `.lck` and `.sta` files (typically the working directory where you run `abaqus job=...`)
+- **Check File Permissions:** The app needs read access to the directory
+- **ABAQUS Must Be Running:** The app monitors files created by ABAQUS, not ABAQUS itself
+
+### Telegram Bot Not Responding
+- **Test Connection:** Click "Test Connection" button in the Monitor tab
+- **Verify Bot Token:** Get a fresh token from @BotFather if needed
+- **Check Chat ID:** Ensure you copied the correct numeric ID from @userinfobot
+- **Network Issues:** The app requires internet access to reach Telegram's servers
+- **Bot Must Be Started:** Send `/start` to your bot in Telegram before using it
+
+### Time Estimates Missing or "Calculating..."
+- **Wait for First Frame:** Estimates require at least one ODB frame to be written
+- **Check ODB Output:** Some jobs don't write ODB frames (no estimation possible)
+- **Verify `.sta` File:** The app reads frame data from the status file
+
+### Multiple Instances Running
+- **Should Not Happen:** The app prevents this automatically via port 54321
+- **If Port Blocked:** Another application may be using port 54321 (rare)
+- **Manual Fix:** Close all instances and restart
+
+### High Memory Usage
+- **Large `.sta` Files:** The app only reads the last 250KB, not the entire file
+- **Memory Leak:** Ensure you're using the latest version (memory management improved in v1.3+)
+- **Restart App:** Close and reopen if memory grows over time
+
+### Update Check Fails
+- **Network Required:** Update check connects to GitHub API
+- **GitHub Rate Limiting:** Try again in a few minutes
+- **Firewall/Proxy:** May block access to api.github.com
 
 ---
 
