@@ -415,12 +415,45 @@ The executable is not code-signed; SmartScreen warnings are expected for unsigne
 
 ## Contributing and Support
 
-- Contributions: placeholder (add contribution guidelines here).
-- Support: placeholder (add preferred support channels here).
-- Issues: use the GitHub issue tracker for bug reports and feature requests.
+### Contributing
+
+Contributions are welcome! Here's how you can help:
+
+**Bug Reports & Feature Requests**
+- Use the [GitHub issue tracker](https://github.com/daadaan/ABAQUS_Watcher_GUI/issues) to report bugs or request features.
+- Before opening a new issue, please search existing issues to avoid duplicates.
+- Include relevant details: Python version, OS, error messages, `.sta` file samples (if applicable).
+
+**Pull Requests**
+- Fork the repository and create a feature branch (`git checkout -b feature/your-feature-name`).
+- Follow the coding standards documented in [.github/copilot-instructions.md](.github/copilot-instructions.md).
+- Test your changes with Python 3.10+ on your target platform.
+- Submit a PR with a clear description of your changes and the problem they solve.
+
+**Code of Conduct**
+- Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
+
+### Support
+
+**Community Support**
+- **Issues:** [GitHub issue tracker](https://github.com/daadaan/ABAQUS_Watcher_GUI/issues) for bug reports and feature requests.
+- **Discussions:** Use GitHub Discussions for general questions and usage help.
+- **Documentation:** This README covers most common use cases and troubleshooting scenarios.
+
+**Sponsorship**
+If this tool saves you time or helps your research/work, consider supporting development:
+
+- [GitHub Sponsors](https://github.com/sponsors/daadaan) - Recurring or one-time support
+- [Buy Me a Coffee](https://buymeacoffee.com/daadaan) - Quick one-time donation
+
+Your support helps maintain and improve the project!
 
 ---
+## Citation / Academic Use
 
+If this tool helps your research, please cite the software (and optionally star the repository).
+
+---
 ## License
 
 This project is licensed under the **Apache License 2.0**.  \
