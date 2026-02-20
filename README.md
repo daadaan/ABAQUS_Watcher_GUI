@@ -176,7 +176,7 @@ You need two things: a **Bot Token** and your **Chat ID**.
 
 When the watcher is running, the app:
 
-- Polls the configured directory for `.lck` files (active jobs).
+- Monitors the configured directory for `.lck` files (active jobs) via filesystem events (watchdog) or periodic scanning.
 - Reads `.sta` files for status/progress, convergence data, and ODB frame progress.
 - Updates the in-app job list (including time remaining when available).
 - Sends Telegram responses for commands and event notifications.
@@ -266,7 +266,6 @@ When it may be less accurate (±50%+ error):
 
 - Estimates appear as `"Calculating..."` until the first ODB frame is written.
 - Some ABAQUS jobs don't generate ODB frames (no estimation available).
-- Updates every 3 seconds as new increment data becomes available.
 
 ---
 
@@ -279,12 +278,14 @@ When it may be less accurate (±50%+ error):
 ### Thread model
 
 - Main thread handles all UI operations (thread-safe).
-- Background daemon thread monitors directory every 3 seconds.
+- Background daemon thread runs event-driven monitoring (watchdog + fallback scan).
 - Separate threads for network operations (Telegram polling, update checks).
 
 ### File monitoring approach
 
-- Polls directory for `.lck` files (active jobs) and `.sta` files (status/progress data).
+- Event-driven via `watchdog` library: filesystem events on `.lck`, `.sta`, `.msg` files trigger immediate refreshes.
+- Debounced via `EVENT_DEBOUNCE_SECONDS` (5s) to batch rapid file writes.
+- Falls back to periodic scanning every 45 seconds if watchdog is unavailable.
 
 ### Security model
 
@@ -298,7 +299,7 @@ When it may be less accurate (±50%+ error):
 - Tail reading: only reads the last 250KB of `.sta` files instead of loading entire files (10-100x speed-up for large files).
 - Header caching: start times and job metadata are cached after first read to avoid repeated parsing.
 - Job limiting: summary commands limited to 15 most recent jobs to prevent Telegram message size errors.
-- Efficient polling: 3-second intervals balance responsiveness with CPU usage.
+- Efficient monitoring: event-driven with watchdog (falls back to 45-second polling if unavailable).
 - Memory management: console logs limited to 500 lines; matplotlib figures explicitly closed to prevent memory leaks.
 
 ---
@@ -308,7 +309,6 @@ When it may be less accurate (±50%+ error):
 | What | Location |
 | --- | --- |
 | Configuration file (Windows) | `%LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json` |
-| Configuration folder (Linux/macOS) | `~/.config/ABAQUSWatcherGUI/` |
 | Stored settings | Directory path, heartbeat interval, theme preference, tray settings |
 | Secure credentials | Bot token and chat ID stored in OS keyring (never in JSON files) |
 
@@ -380,7 +380,7 @@ The application includes a built-in update checker in the **Config** tab.
 ### High Memory Usage
 
 - Large `.sta` files: the app only reads the last 250KB, not the entire file
-- Memory leak: ensure you're using the latest version (memory management improved in v1.3+)
+- Memory leak: ensure you're using the latest version
 - Restart app: close and reopen if memory grows over time
 
 ### Update Check Fails
