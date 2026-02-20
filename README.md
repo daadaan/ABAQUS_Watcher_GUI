@@ -16,7 +16,7 @@ A cross-platform Python Desktop GUI that watches your ABAQUS working directory f
 - Time estimation for running jobs (based on ODB frame output; shown in app + Telegram)
 - Convergence plotting: Step Time vs. Increment Size graph sent via Telegram
 - Remote control via Telegram commands (status queries and termination)
-- Secure storage: Bot Token and Chat ID stored in Windows Credential Locker / OS keyring
+- Secure storage: Bot Token and Chat ID stored in the OS keyring (platform credential vault)
 - System tray mode for unobtrusive background operation
 - Single instance enforcement (second launch restores the running instance)
 - Deployment-aware updates (script self-update; EXE prompts download)
@@ -141,6 +141,11 @@ For Windows users who prefer not to manage Python environments, a pre-compiled `
 
 The app has a GUI tab for configuration. You do not need to edit config files manually.
 
+> **Platform paths (for reference)**
+> - Windows: `%LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json`
+> - macOS: `~/Library/Application Support/ABAQUSWatcherGUI/abaqus_watcher_config.json`
+> - Linux: `$XDG_CONFIG_HOME/ABAQUSWatcherGUI/abaqus_watcher_config.json` (fallback: `~/.config/ABAQUSWatcherGUI/abaqus_watcher_config.json`)
+
 ### Telegram bot setup
 
 You need two things: a **Bot Token** and your **Chat ID**.
@@ -157,7 +162,7 @@ You need two things: a **Bot Token** and your **Chat ID**.
 3. It will reply with your "Id" (a number like `123456789`). Copy this ID.
 
 > **Security note**
-> Credentials (Bot Token, Chat ID) are encrypted and stored in the **Windows Credential Locker** (or platform keyring), never in plain-text files.
+> Credentials (Bot Token, Chat ID) are encrypted and stored in the **OS keyring** (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in plain-text files.
 
 ### App configuration steps
 
@@ -308,7 +313,7 @@ When it may be less accurate (±50%+ error):
 
 | What | Location |
 | --- | --- |
-| Configuration file (Windows) | `%LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json` |
+| Configuration file | Windows: `%LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json`<br>macOS: `~/Library/Application Support/ABAQUSWatcherGUI/abaqus_watcher_config.json`<br>Linux: `$XDG_CONFIG_HOME/ABAQUSWatcherGUI/abaqus_watcher_config.json` (fallback: `~/.config/ABAQUSWatcherGUI/abaqus_watcher_config.json`) |
 | Stored settings | Directory path, heartbeat interval, theme preference, tray settings |
 | Secure credentials | Bot token and chat ID stored in OS keyring (never in JSON files) |
 
@@ -397,7 +402,7 @@ The application includes a built-in update checker in the **Config** tab.
 No. The app features a GUI tab to handle setup.
 
 **Where are my Telegram credentials stored?**  \
-In the OS keyring (Windows Credential Locker / platform keyring), not in plain-text files.
+In the OS keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service), not in plain-text files.
 
 **Why are my routine messages silent?**  \
 To prevent spamming your phone: Heartbeats and status checks are sent silently; only completion/abort triggers a sound/vibration.

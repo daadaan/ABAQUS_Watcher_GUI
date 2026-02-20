@@ -16,34 +16,37 @@
 ABAQUS Watcher GUI
 ==================
 
-A modern, cross-platform Desktop GUI application for monitoring SIMULIA ABAQUS simulation jobs
-remotely via Telegram Bot API. Provides real-time job status tracking, convergence analysis,
-time estimation, and remote control capabilities.
+A desktop GUI for monitoring SIMULIA Abaqus jobs and reporting status through Telegram.
+
+The application tracks running jobs from filesystem signals (`.lck`, `.sta`, `.msg`),
+extracts progress/health information, estimates completion time, and supports remote
+status queries and job termination commands.
 
 Overview
 --------
-This application watches a designated directory for ABAQUS lock files (.lck) and status files
-(.sta), parsing job progress and sending notifications through a Telegram bot. It runs
-unobtrusively in the system tray with a customizable dark/light mode interface.
+This implementation uses an event-driven watcher (`watchdog`, when available) with a
+safe fallback scanner. File changes request refreshes, writes are debounced, and periodic
+fallback scans ensure recovery from missed events. UI updates are always marshalled back
+to the Tk main thread via `self.after(...)`.
 
 Key Features
 ------------
-- **Real-time Job Monitoring:** Automatically detects job starts, completions, and failures
-- **Time Estimation:** Linear extrapolation of remaining job duration based on ODB frame progress
-- **Convergence Plots:** Generates matplotlib graphs showing increment performance
-- **Remote Control:** Execute Telegram commands from anywhere to check status or terminate jobs
-- **Secure Credential Storage:** OS-level keyring integration (Windows Credential Manager, macOS
-  Keychain, Linux Secret Service) - no plain-text tokens
-- **System Tray Integration:** Minimize to tray for background operation without taskbar clutter
-- **Single Instance Enforcement:** Prevents multiple copies from running simultaneously
-- **Deployment-Aware Updates:** Script mode supports auto-updates; EXE mode provides download links
-- **Heartbeat Notifications:** Periodic status updates for long-running jobs (configurable interval)
+- **Event-driven monitoring:** Detects starts/finishes quickly from `.lck/.sta/.msg` events
+- **Fallback resilience:** Periodic scans continue monitoring if watchdog is unavailable
+- **Progress reporting:** Solver-aware parsing for Standard/Explicit status details
+- **Time estimation:** Remaining/total duration from ODB frames or Standard step fraction
+- **Telegram integration:** Notifications, summaries, detail queries, and remote termination
+- **Secure credentials:** Bot token/chat ID stored in OS keyring (not in JSON config)
+- **Convergence plots:** Log-scale step-time plots generated and sent as Telegram images
+- **System tray + single instance:** Background-friendly UX with restore-on-second-launch
+- **Deployment-aware updates:** Script self-update path and release-page flow for frozen EXE
+- **Heartbeat messages:** Configurable periodic updates for long-running active jobs
 
 Platform Support
 ----------------
-- **Primary:** Windows 10/11 (fully tested)
-- **Compatible:** Linux, macOS (community tested)
-- **Python:** 3.10+ required (tested with 3.10, 3.11, 3.12, 3.14)
+- **Primary:** Windows 10/11
+- **Compatible:** Linux, macOS (best effort; keyring/backend availability may vary)
+- **Python:** 3.10+ (tested with 3.10, 3.11, 3.12, 3.14)
 
 Dependencies
 ------------
@@ -70,6 +73,17 @@ Or use the pre-built executable (Windows only):
 For complete setup instructions and Telegram bot configuration, see:
     https://github.com/daadaan/ABAQUS_Watcher_GUI#readme
 
+Operational Notes
+-----------------
+- Non-sensitive settings are saved per-platform:
+    - Windows: `%LOCALAPPDATA%\\ABAQUSWatcherGUI\\abaqus_watcher_config.json`
+    - macOS: `~/Library/Application Support/ABAQUSWatcherGUI/abaqus_watcher_config.json`
+    - Linux: `$XDG_CONFIG_HOME/ABAQUSWatcherGUI/abaqus_watcher_config.json`
+        (fallback: `~/.config/ABAQUSWatcherGUI/abaqus_watcher_config.json`)
+- Sensitive values (bot token/chat ID) are stored in the OS keyring.
+- Matplotlib runs with the non-interactive `Agg` backend; figures are saved to disk, not shown.
+- UI mutations must never happen from worker threads.
+
 Author & License
 ----------------
 Author: Souvik Biswas (@daadaan)
@@ -82,26 +96,21 @@ For bug reports and feature requests:
 
 from __future__ import annotations
 
-# ==================== THREADING MODEL ====================
-# CRITICAL FOR GUI STABILITY - NEVER VIOLATE THESE RULES:
+# ======================== THREADING CONTRACT ========================
+# Main thread (Tk event loop) owns all widget access and layout changes.
+# Worker threads handle monitoring/network/file I/O and must communicate
+# back using `self.after(0, callback)`.
 #
-# MAIN THREAD (GUI Event Loop):
-# - All Tk/customtkinter widget operations (configure, pack, destroy)
-# - User interaction handling (button clicks, text entry)
-# - Widget creation and layout management
+# Background execution model:
+# - `run_loop()` performs event-driven monitoring (watchdog) with fallback scans.
+# - Telegram polling and heartbeat/report logic run inside the watcher loop.
+# - Update checks and tray icon runtime execute on daemon threads.
 #
-# BACKGROUND THREADS (Daemon):
-# - Event-driven file monitoring (watchdog) + slow fallback scan
-# - Network calls (Telegram API, GitHub API)
-# - File I/O operations (.sta/.lck parsing)
-# - Long-running computations (plot generation)
-#
-# THREAD COMMUNICATION:
-# - Background → Main: Use self.after(0, callback) to schedule UI updates
-# - Main → Background: Use threading.Event for stop signals
-# - NEVER call widget methods directly from background threads
-# - NEVER block the main thread with time.sleep() or network calls
-# ==========================================================
+# Safety rules:
+# - Never call widget methods from background threads.
+# - Never create/destroy widgets from background threads.
+# - Never block the main thread with sleeps or network/file operations.
+# ===================================================================
 
 import customtkinter as ctk
 import tkinter as tk
@@ -152,11 +161,28 @@ import matplotlib.pyplot as plt
 
 APP_NAME = "ABAQUS Watcher GUI"
 GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
-CURRENT_VERSION = "3.0.0"  # Must match Git release tags (without 'v' prefix)
+CURRENT_VERSION = "3.0.1"  # Must match Git release tags (without 'v' prefix)
 
-# Config file: %LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json
-# NOTE: LOCALAPPDATA is Windows-only; Linux/macOS will need adaptation.
-app_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "ABAQUSWatcherGUI")
+# Config file location by platform:
+# - Windows: %LOCALAPPDATA%\ABAQUSWatcherGUI\abaqus_watcher_config.json
+# - macOS:   ~/Library/Application Support/ABAQUSWatcherGUI/abaqus_watcher_config.json
+# - Linux:   $XDG_CONFIG_HOME/ABAQUSWatcherGUI/abaqus_watcher_config.json
+#            (fallback: ~/.config/ABAQUSWatcherGUI/abaqus_watcher_config.json)
+def _get_app_data_dir() -> str:
+    """Return a per-user app-data directory for the current platform."""
+    if sys.platform.startswith("win"):
+        base_dir = os.environ.get("LOCALAPPDATA")
+        if not base_dir:
+            base_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    elif sys.platform == "darwin":
+        base_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base_dir = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+
+    return os.path.join(base_dir, "ABAQUSWatcherGUI")
+
+
+app_data_dir = _get_app_data_dir()
 os.makedirs(app_data_dir, exist_ok=True)
 CONFIG_FILE = os.path.join(app_data_dir, "abaqus_watcher_config.json")
 
