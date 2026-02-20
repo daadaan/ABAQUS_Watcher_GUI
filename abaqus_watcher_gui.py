@@ -140,7 +140,7 @@ GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
 
 # Semantic Version String (format: "MAJOR.MINOR.PATCH")
 # CRITICAL: Must match Git release tags (without 'v' prefix) for update detection
-CURRENT_VERSION = "2.2.0"
+CURRENT_VERSION = "2.2.1"
 
 # Configuration File Location Strategy
 # WHY %LOCALAPPDATA%:
@@ -254,6 +254,8 @@ class AbaqusWatcherApp(ctk.CTk):
         self.font_head = ("Roboto Medium", 14)
         self.font_body = ("Roboto", 12)
         self.font_mono = ("Consolas", 11)  # Monospace for logs
+        # Larger monospace font for time displays in the job table
+        self.font_time = ("Consolas", 12)
         self.font_bold = ("Roboto", 12, "bold")
         self.font_small = ("Roboto", 10)
 
@@ -860,7 +862,7 @@ class AbaqusWatcherApp(ctk.CTk):
                     ctk.set_appearance_mode(theme)
             except: pass  # Silently fail if config is corrupted
         
-        # Load sensitive credentials from Windows Credential Manager
+        # Load sensitive credentials from the OS keyring backend
         try:
             t = keyring.get_password(APP_NAME, "bot_token")
             c = keyring.get_password(APP_NAME, "chat_id")
@@ -907,7 +909,7 @@ class AbaqusWatcherApp(ctk.CTk):
         Wipes all configuration data:
         1. Stops watcher if running
         2. Deletes JSON config file
-        3. Removes credentials from Windows Credential Manager
+        3. Removes credentials from the OS keyring backend
         4. Clears all UI input fields
         
         IMPORTANT: This is destructive and requires user confirmation.
@@ -1026,7 +1028,7 @@ class AbaqusWatcherApp(ctk.CTk):
             # Start the watcher
             self.stop_event.clear()  # Clear any previous stop signals
             self.is_running = True
-            self.btn_start.configure(text="STOP WATCHER", fg_color="#EF4444", hover_color="#DC2626")  # Red
+            self.btn_start.configure(text="STOP WATCHER", fg_color="#DC2626", hover_color="#EF4444")  # Red
             self.lbl_status.configure(text="RUNNING", text_color="#10B981")  # Green
             # Spawn daemon thread (automatically dies when main program exits)
             self.watcher_thread = threading.Thread(target=self.run_loop, daemon=True)
@@ -1103,7 +1105,7 @@ class AbaqusWatcherApp(ctk.CTk):
 
             # Right: Time estimate with colour coding (fixed width)
             color = "#10B981" if "h" in time_str or "m" in time_str else "gray"
-            time_label = ctk.CTkLabel(row, text=time_str, font=self.font_mono,
+            time_label = ctk.CTkLabel(row, text=time_str, font=self.font_time,
                                       text_color=color, anchor="e", width=50)
             time_label.grid(row=0, column=1, padx=(0, 5), sticky="e")
 
@@ -1567,7 +1569,7 @@ class AbaqusWatcherApp(ctk.CTk):
         - 10 MB file: ~500ms read + 100ms processing = 600ms
         - 100 MB file: ~5000ms read + 1000ms processing = 6000ms
         - Memory: Entire file loaded into RAM
-        - Repeated every 3 seconds = unsustainable for large files
+        - Repeated every 8 seconds = unsustainable for large files
         
         Tail Read (This Method):
         - Any file size: ~10ms seek + 20ms read + 5ms decode = 35ms
@@ -1737,7 +1739,22 @@ class AbaqusWatcherApp(ctk.CTk):
         return None
 
     def _get_solver_type(self, sta_path):
-        """Detect solver type from the first line of a .sta file."""
+        """
+        Detect the ABAQUS solver product from the first line of a .sta file.
+
+        ABAQUS writes a product identifier as the very first line, e.g.:
+          ``Abaqus/Standard 2023``
+          ``Abaqus/Explicit 2023``
+
+        Args:
+            sta_path: Absolute path to the .sta file.
+
+        Returns:
+            str: ``"STANDARD"`` for Abaqus/Standard,
+                 ``"EXPLICIT"`` for Abaqus/Explicit,
+                 ``"UNKNOWN"`` if the file is missing or the first line does
+                 not match either product name.
+        """
         if not os.path.exists(sta_path):
             return "UNKNOWN"
         try:
@@ -1753,10 +1770,28 @@ class AbaqusWatcherApp(ctk.CTk):
 
     def _parse_standard_sta_progress(self, tail_text):
         """
-        Parse the latest Abaqus/Standard summary row from .sta tail text.
+        Extract the most recent Abaqus/Standard increment-summary row from .sta tail text.
 
-        Row format:
-            STEP INC ATT SEVERE EQUIL TOTAL TOTAL_TIME STEP_TIME INC_OF_TIME
+        Abaqus/Standard writes one summary row per completed increment attempt:
+
+            STEP  INC  ATT  SEVERE EQUIL TOTAL  TOTAL TIME  STEP TIME  INC OF TIME
+
+        Each column is whitespace-delimited.  The attempt column (index 2) has
+        the format ``\d+U?`` where the optional trailing ``U`` flag denotes a
+        non-default increment size chosen by the automatic-increment controller.
+
+        The method scans the text backwards so the first matching row is the
+        most recent increment.
+
+        Args:
+            tail_text: Plain-text content from the tail of the .sta file,
+                       as returned by ``_read_tail_text``.
+
+        Returns:
+            dict | None: Keys ``step``, ``increment``, ``attempt``, ``severe``,
+                         ``equil``, ``total_iters``, ``total_time``, ``step_time``,
+                         ``inc_time`` (all strings); or ``None`` if no matching
+                         row is found.
         """
         try:
             for line in reversed(tail_text.splitlines()):
@@ -1789,13 +1824,33 @@ class AbaqusWatcherApp(ctk.CTk):
         """
         Estimate remaining duration for Abaqus/Standard jobs.
 
-        Uses latest step progress from .sta and fraction-of-step from .msg:
-            total_step_time ~= step_time_completed / fraction_of_step_completed
-            remaining ~= total_step_time - step_time_completed
+        Reads the ``FRACTION OF STEP COMPLETED`` value from the .msg file tail
+        and combines it with the simulation step time extracted from the .sta
+        summary row to project total and remaining step time:
 
-        When ``actual_elapsed_sec`` is provided (wall-clock seconds since job
-        start) the displayed total is ``actual_elapsed_sec + remaining`` so
-        the number reflects real-world duration rather than simulation step time.
+            total_step_time  = step_time_completed / fraction_completed
+            remaining        = max(total_step_time - step_time_completed, 0)
+
+        When ``actual_elapsed_sec`` is provided (wall-clock seconds measured
+        from ``_get_start_datetime``), the displayed total is
+        ``actual_elapsed_sec + remaining`` so it reflects real-world duration
+        rather than simulation step time.
+
+        The .msg file is preferred for the fraction value because Abaqus writes
+        ``FRACTION OF STEP COMPLETED`` there at every increment, while the .sta
+        only carries cumulative step time.
+
+        Args:
+            d: Watch directory containing the .sta and .msg files.
+            j: Job name without extension.
+            sta_tail_text: Pre-read .sta tail text (avoids a redundant file read if
+                           the caller already holds it); may be empty string.
+            actual_elapsed_sec: Wall-clock seconds elapsed since job start, or
+                                ``None`` to fall back to simulation step-time.
+
+        Returns:
+            tuple[str | None, float, float]: ``(message, remaining_sec, total_sec)``
+            or ``(None, 0, 0)`` if the .msg file is absent or cannot be parsed.
         """
         msg_path = os.path.join(d, j + ".msg")
         if not os.path.exists(msg_path):
@@ -1916,7 +1971,14 @@ class AbaqusWatcherApp(ctk.CTk):
         - Cannot predict cutbacks or divergence
         
         Args:
-            tail_text: Last N bytes of .sta file (from _read_tail_text)
+            tail_text: Last N bytes of .sta file (from _read_tail_text).
+            actual_elapsed_sec: Wall-clock seconds elapsed since job start,
+                                obtained from ``_get_start_datetime``.  When
+                                provided, the displayed total is
+                                ``actual_elapsed_sec + remaining`` so it
+                                reflects real-world duration.  When ``None``,
+                                the cumulative CPU time read from the .sta file
+                                is used as the elapsed baseline instead.
             
         Returns:
             tuple: (message_str, remaining_sec, total_sec) or (None, 0, 0) if estimation fails
@@ -1939,23 +2001,20 @@ class AbaqusWatcherApp(ctk.CTk):
             if current_frame == 0:
                 return "Calculating...", 0, 0
 
-            # 2. Find the latest CPU TIME (HH:MM:SS) from the increment lines
-            # Pattern: Int or Float increment number followed by scientific notation numbers and a time string
-            # We look for lines like: "289463 1.000E-01 ... 01:35:45 ..."
-            # We scan the lines *before* the frame match to find the associated time
+            # 2. Find the latest cumulative CPU time (HH:MM:SS) from the .sta data rows.
+            # Abaqus writes one data row per increment; column layout (0-based index):
+            #   0: increment counter (int)
+            #   1: step time (float)
+            #   2: step time increment (float)
+            #   3: cumulative CPU time (HH:MM:SS)
+            # Rows are scanned backwards so the first match is the most recent increment.
             lines = tail_text.splitlines()
             latest_cpu_time_str = None
-            
-            # Simple regex to find the CPU time (Col 3 usually) in data lines
-            # Looks for: [Int] [Float] [Float] [HH:MM:SS]
-            # We iterate backwards from the end of the file
             for line in reversed(lines):
                 parts = line.split()
                 # Check if this is a data line (starts with digit, has time format in index 2 or 3)
                 if len(parts) > 3 and parts[0].isdigit() and ":" in parts[3]: 
-                    # Index 3 is CPU Time in the provided sample (Col 4 if 1-based, index 3 if 0-based)
-                    # Sample: 289463  1.000E-01 1.000E-01  01:35:45 ...
-                    latest_cpu_time_str = parts[3] 
+                    latest_cpu_time_str = parts[3]  # column index 3 = cumulative CPU time (HH:MM:SS)
                     break
             
             if not latest_cpu_time_str:
@@ -1991,14 +2050,24 @@ class AbaqusWatcherApp(ctk.CTk):
         """
         Build a multi-line progress summary for a running or finished job.
 
-        Reads the last ``MAX_TAIL_BYTES`` of the .sta file once, then makes a
-        single backwards pass to extract:
-        - The latest increment line (step time, dt, kinetic energy, total energy)
-        - The latest ODB frame counter (current / total)
-        - The current STEP number
+        Reads the last ``MAX_TAIL_BYTES`` of the .sta file once, then branches
+        on solver type:
 
-        The completion estimate from ``_estimate_completion`` is appended when
-        available.
+        **Abaqus/Standard** (``solver_type == "STANDARD"``)
+            Parses the latest summary row via ``_parse_standard_sta_progress``
+            and estimates completion via ``_estimate_completion_standard``,
+            which reads the ``FRACTION OF STEP COMPLETED`` field from the .msg
+            file.
+
+        **Abaqus/Explicit and unknown solvers**
+            Makes a single backwards pass through the .sta tail to extract the
+            latest increment row (step time, dt, energies), the ODB frame
+            counter, and the current STEP number.  Completion is estimated by
+            ``_estimate_completion`` using ODB frame progress.
+
+        In both paths, wall-clock elapsed time since job start (from
+        ``_get_start_datetime``) is passed to the estimation functions so the
+        displayed total reflects real-world duration.
 
         Args:
             d: Watch directory containing the .sta file.
@@ -2008,7 +2077,7 @@ class AbaqusWatcherApp(ctk.CTk):
 
         Returns:
             str: Formatted status string ready for Telegram or the UI, or
-                 "Waiting..." / "Error" on failure.
+                 ``"Waiting..."`` / ``"Error"`` on failure.
         """
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "Waiting..."
@@ -2232,10 +2301,12 @@ class AbaqusWatcherApp(ctk.CTk):
         - Figure always closed via finally block
         
         PARSING LOGIC:
-        - Reads entire .sta file line-by-line (convergence plot = final summary)
-        - Searches for "SUMMARY" lines with increment data
-        - Extracts: increment number, step time, dt (time step size)
-        - Filters scientific notation patterns
+        - Reads the entire .sta file line-by-line
+        - Identifies data rows by checking that the first whitespace-delimited
+          token is a pure integer (the increment counter)
+        - Requires at least 8 tokens per row; extracts column 1 (step time, float)
+          and column 4 (time-step size dt, float)
+        - Skips malformed rows silently
         
         THREAD SAFETY:
         - matplotlib.use('Agg') is thread-safe after initial set
