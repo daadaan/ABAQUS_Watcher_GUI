@@ -91,7 +91,7 @@ from __future__ import annotations
 # - Widget creation and layout management
 #
 # BACKGROUND THREADS (Daemon):
-# - Directory polling (3-second intervals)
+# - Directory polling (8-second intervals)
 # - Network calls (Telegram API, GitHub API)
 # - File I/O operations (.sta/.lck parsing)
 # - Long-running computations (plot generation)
@@ -104,6 +104,8 @@ from __future__ import annotations
 # ==========================================================
 
 import customtkinter as ctk
+import tkinter as tk
+import tkinter.font as tkFont
 from tkinter import messagebox, filedialog
 import json
 import os
@@ -138,7 +140,7 @@ GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
 
 # Semantic Version String (format: "MAJOR.MINOR.PATCH")
 # CRITICAL: Must match Git release tags (without 'v' prefix) for update detection
-CURRENT_VERSION = "2.0.0"
+CURRENT_VERSION = "2.0.2"
 
 # Configuration File Location Strategy
 # WHY %LOCALAPPDATA%:
@@ -149,7 +151,8 @@ CURRENT_VERSION = "2.0.0"
 # - Automatically available as environment variable
 #
 # TYPICAL PATH: C:\Users\YourName\AppData\Local\ABAQUSWatcherGUI\abaqus_watcher_config.json
-# FALLBACK: On non-Windows systems, this may fail and require manual handling
+# LIMITATION: The LOCALAPPDATA environment variable is Windows-only; on Linux/macOS the
+#             os.environ[] lookup raises KeyError and the application will crash at startup.
 app_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "ABAQUSWatcherGUI")
 os.makedirs(app_data_dir, exist_ok=True)  # Create directory tree if missing (recursive)
 CONFIG_FILE = os.path.join(app_data_dir, "abaqus_watcher_config.json")
@@ -190,8 +193,27 @@ START_SCAN_LINES = 200
 
 class AbaqusWatcherApp(ctk.CTk):
     """
-    Main Application Class.
-    Inherits from customtkinter.CTk to provide a modern dark/light mode interface.
+    Root application window for ABAQUS Watcher GUI.
+
+    Inherits from ``customtkinter.CTk`` (the themed Tk root window) and owns the
+    entire application lifecycle: UI construction, configuration persistence,
+    background monitoring thread, Telegram communication, and system-tray
+    integration.
+
+    Responsibilities
+    ----------------
+    - Build and manage the tabbed UI (Monitor / Config / Help).
+    - Start/stop the background ``run_loop`` thread that scans for .lck/.sta files.
+    - Send job lifecycle notifications (start, completion, heartbeat) via Telegram.
+    - Poll the Telegram Bot API for remote commands (/status, /kill, etc.).
+    - Persist non-sensitive settings to JSON and credentials to the OS keyring.
+    - Minimize to the system tray and restore via ``pystray``.
+
+    Threading contract
+    ------------------
+    All widget operations **must** happen on the main (Tk event-loop) thread.
+    Background threads communicate back to the UI exclusively through
+    ``self.after(0, callback)``.
     """
     def __init__(self):
         super().__init__()
@@ -228,7 +250,7 @@ class AbaqusWatcherApp(ctk.CTk):
         ctk.set_appearance_mode("System")  # Follows Windows Dark/Light mode
         ctk.set_default_color_theme("blue")
         
-        # --- Typography Constants ---
+        # --- Font Definitions (instance attributes used across all widgets) ---
         self.font_head = ("Roboto Medium", 14)
         self.font_body = ("Roboto", 12)
         self.font_mono = ("Consolas", 11)  # Monospace for logs
@@ -350,14 +372,25 @@ class AbaqusWatcherApp(ctk.CTk):
         # to fit all content, which would break the layout and push other widgets off-screen
         self.container_jobs = ctk.CTkFrame(self.tab_monitor, height=150, fg_color="transparent")
         self.container_jobs.pack(padx=10, pady=(2, 2), fill="x")
-        self.container_jobs.pack_propagate(False)  # <--- THE MAGIC FIX: Maintains fixed height
+        self.container_jobs.pack_propagate(False)  # Maintains fixed height
 
         # Scrollable frame for job list - automatically adds scrollbar when content overflows
         self.frame_jobs_list = ctk.CTkScrollableFrame(self.container_jobs, fg_color=("white", "gray20"))
         self.frame_jobs_list.pack(fill="both", expand=True)
+        # Resize the built-in vertical scrollbar to match the horizontal one (12 px)
+        self.frame_jobs_list._scrollbar.configure(width=12)
 
         # Placeholder label for initial state (replaced when jobs are detected)
         ctk.CTkLabel(self.frame_jobs_list, text="Watcher Stopped", text_color="gray").pack(pady=20)
+
+        # Persistent horizontal scrollbar for the job name column.
+        # Lives outside container_jobs so it sits at the very bottom of the job activity
+        # monitor area, below all job rows. Wired to canvases in update_job_table().
+        self.hscroll_jobs = ctk.CTkScrollbar(
+            self.tab_monitor, orientation="horizontal", height=12,
+            command=self._on_jobs_hscroll,
+        )
+        self.hscroll_jobs.pack(padx=10, pady=(0, 2), fill="x")
 
         # --- LIVE ACTIVITY SECTION ---
         ctk.CTkLabel(self.tab_monitor, text="Live Activity", anchor="w", font=self.font_bold, text_color=("gray40", "gray60")).pack(padx=10, pady=(5, 2), fill="x")
@@ -479,21 +512,19 @@ class AbaqusWatcherApp(ctk.CTk):
             default: Default value to pre-populate the field
             secret: If True, adds a toggle visibility button and masks input with bullets
         """
-        # Label for the input field
         ctk.CTkLabel(parent, text=label, anchor="w", font=self.font_bold, text_color=("gray50", "gray50")).pack(padx=5, pady=(5,0), fill="x")
         
-        # Transparent frame to hold entry + optional toggle button
+        # Row frame: transparent background so it inherits the parent colour
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(padx=5, pady=0, fill="x")
         
-        # Text entry widget
         entry = ctk.CTkEntry(frame, height=34, font=self.font_body)
         entry.pack(side="left", fill="x", expand=True)
         entry.insert(0, default)
         
-        # Add visibility toggle for sensitive fields (tokens, passwords)
+        # Add visibility toggle for sensitive fields
         if secret:
-            entry.configure(show="●")  # Mask input with bullet points
+            entry.configure(show="●")
             btn_eye = ctk.CTkButton(frame, text="👁", width=34, height=34, 
                                     fg_color=("gray80", "gray30"), hover_color=("gray70", "gray40"), 
                                     text_color=("black", "white"),
@@ -504,7 +535,7 @@ class AbaqusWatcherApp(ctk.CTk):
         setattr(self, var_name, entry)
 
     def toggle_password(self, entry, btn):
-        """Toggles entry visibility between masked and plain text."""
+        """Toggle a CTkEntry between bullet-masked ("●") and plain-text display."""
         if entry.cget("show") == "●":
             entry.configure(show="")
             btn.configure(text="✕") # Icon when visible
@@ -618,9 +649,11 @@ class AbaqusWatcherApp(ctk.CTk):
         5. Prompt user for restart using os.execv()
         
         SECURITY MEASURES:
-        - Content validation prevents corrupted downloads from breaking app
-        - User confirmation required before overwriting file
-        - User confirmation required before restarting
+        - Content validation: rejects download unless it contains the expected
+          class definition (prevents partial downloads or wrong files)
+        - Overwrite confirmation happens in the caller (check_updates) before
+          this method is invoked
+        - User confirmation required before restarting via os.execv()
         
         ERROR HANDLING:
         - HTTP errors: Show error dialog, keep current version
@@ -650,11 +683,10 @@ class AbaqusWatcherApp(ctk.CTk):
                 messagebox.showerror("Error", "Could not fetch update file.")
                 return
 
-            # Read new code
             new_code = resp.text
 
-            # Safety Check: Validate that we received a valid Python script
-            # Prevents corrupted downloads or wrong files from breaking the app
+            # Content validation: ensure the download contains the expected class
+            # definition before overwriting the script.
             if "class AbaqusWatcherApp" not in new_code:
                 messagebox.showerror("Error", "Invalid update file received.")
                 return
@@ -691,7 +723,8 @@ class AbaqusWatcherApp(ctk.CTk):
                     # Trigger the GUI restore on the main thread
                     self.after(0, self.show_window_from_tray)
             except Exception:
-                pass # Port likely taken or app closing
+                pass  # socket.bind() failed: port already taken by another process,
+                      # or the socket was closed because the app is shutting down.
 
         # Run as daemon so it dies when the app closes
         threading.Thread(target=listen, daemon=True).start()
@@ -757,17 +790,44 @@ class AbaqusWatcherApp(ctk.CTk):
             self.tray_thread.start()
 
     def show_window_from_tray(self, icon=None, item=None):
+        """
+        Restore the main window from the system tray.
+
+        Stops the running ``pystray`` icon (which is single-use), then
+        schedules ``deiconify`` on the main thread to make the window visible
+        again.  The ``icon`` and ``item`` parameters are provided by pystray's
+        menu callback signature and are not used directly.
+
+        Args:
+            icon: pystray.Icon instance passed by the tray menu callback (unused).
+            item: pystray.MenuItem that triggered the call (unused).
+        """
         if self.tray_icon is not None:
             self.tray_icon.stop()
         self.after(0, self.deiconify)
 
     def change_theme(self, new_theme: str):
+        """Apply a customtkinter appearance mode ('System', 'Dark', or 'Light')."""
         ctk.set_appearance_mode(new_theme)
 
     def on_closing(self):
+        """Handle the window close (X) button by delegating to ``quit_app``."""
         self.quit_app()
 
     def quit_app(self, icon=None, item=None):
+        """
+        Cleanly shut down the application.
+
+        Stops the ``pystray`` tray icon if active, signals the background
+        monitoring thread to exit via ``stop_event``, then calls
+        ``self.quit()`` to end the Tkinter main loop.  The ``icon`` and
+        ``item`` parameters support being called directly from a pystray
+        menu item.
+
+        Args:
+            icon: pystray.Icon instance (passed by tray menu callback; unused).
+            item: pystray.MenuItem that triggered the call (unused).
+        """
         if self.tray_icon:
             self.tray_icon.stop()
         self.stop_event.set()
@@ -778,7 +838,8 @@ class AbaqusWatcherApp(ctk.CTk):
         """
         Loads configuration from two sources:
         1. Non-sensitive settings from JSON file (directory, heartbeat, theme)
-        2. Sensitive credentials from Windows Credential Manager via keyring library
+        2. Sensitive credentials from the OS keyring backend via the keyring library
+           (Windows Credential Manager, macOS Keychain, or Linux Secret Service)
         
         This separation ensures tokens are never stored in plain text.
         """
@@ -812,7 +873,8 @@ class AbaqusWatcherApp(ctk.CTk):
         """
         Saves configuration to two locations:
         1. Non-sensitive settings to JSON file
-        2. Sensitive credentials to Windows Credential Manager
+        2. Sensitive credentials to the OS keyring backend
+           (Windows Credential Manager, macOS Keychain, or Linux Secret Service)
         
         SECURITY: Tokens are NEVER written to JSON files.
         """
@@ -922,7 +984,14 @@ class AbaqusWatcherApp(ctk.CTk):
         self.console.configure(state="disabled")
 
     def ping_test(self):
-        """Checks internet connectivity."""
+        """
+        Test HTTP reachability by sending a GET request to Google's
+        ``/generate_204`` endpoint (returns 204 No Content with no body,
+        minimising bandwidth).  Logs "Online." on success or "Offline." if
+        the request raises any exception.
+
+        Runs in a short-lived daemon thread to avoid blocking the UI.
+        """
         def _ping():
             try:
                 # generate_204 returns quickly and has tiny payload.
@@ -963,36 +1032,84 @@ class AbaqusWatcherApp(ctk.CTk):
             self.watcher_thread = threading.Thread(target=self.run_loop, daemon=True)
             self.watcher_thread.start()
 
+    def _on_jobs_hscroll(self, *args):
+        """Relay the persistent horizontal scrollbar's commands to all job name canvases."""
+        for c in getattr(self, "_name_canvases", []):
+            c.xview(*args)
+
     def update_job_table(self, job_data):
         """
         Updates the active jobs list UI with current job status and time estimates.
-        
+
+        Job names are rendered in canvas widgets that clip long text; a single
+        CTkScrollbar (self.hscroll_jobs) below the entire job section lets the
+        user pan all name cells simultaneously.
+
         IMPORTANT: Must be called from the main thread via self.after().
-        
+
         Args:
             job_data: List of tuples [(job_name, time_remaining_str), ...]
         """
         # Clear all existing rows
-        for w in self.frame_jobs_list.winfo_children(): 
+        for w in self.frame_jobs_list.winfo_children():
             w.destroy()
+
+        # Reset canvas list and scrollbar when there are no active jobs
+        self._name_canvases: list[tk.Canvas] = []
+        self.hscroll_jobs.set(0.0, 1.0)  # Full-width thumb = nothing to scroll
 
         # Show placeholder if no jobs are active
         if not job_data:
             ctk.CTkLabel(self.frame_jobs_list, text="No active jobs", font=self.font_small, text_color="gray").pack(pady=10)
             return
 
+        NAME_COL_W = 150
+        ROW_H = 20 
+
+        # Use a smaller font for job name labels to keep rows tidy
+        name_font = self.font_small  # ("Roboto", 10)
+
+        # Measure pixel width of the longest job name to define the shared scroll region
+        tk_font = tkFont.Font(font=name_font)
+        max_text_w = max((tk_font.measure(name) for name, _ in job_data), default=NAME_COL_W)
+        # Add a small right-padding; ensure virtual width is at least the visible width
+        virtual_w = max(max_text_w + 8, NAME_COL_W)
+
+        # Canvas background / text colour must match the surrounding frame and theme
+        mode = ctk.get_appearance_mode()
+        canvas_bg = "white" if mode == "Light" else "#333333"
+        canvas_fg = "black" if mode == "Light" else "white"
+
         # Create a row for each active job
         for name, time_str in job_data:
             row = ctk.CTkFrame(self.frame_jobs_list, fg_color="transparent")
             row.pack(fill="x", pady=2)
-            
-            # Left: Job name in bold
-            ctk.CTkLabel(row, text=name, font=self.font_bold, anchor="w").pack(side="left", padx=5)
-            
-            # Right: Time estimate with color coding
-            # Green if we have a valid estimate (contains 'h' or 'm'), gray if still calculating
+            row.grid_columnconfigure(0, weight=1, minsize=NAME_COL_W)
+            row.grid_columnconfigure(1, weight=0, minsize=50)
+
+            # Left: Job name clipped inside a canvas (scrollbar drives panning)
+            name_canvas = tk.Canvas(
+                row,
+                width=NAME_COL_W, height=ROW_H,
+                bg=canvas_bg, highlightthickness=0, bd=0,
+            )
+            name_canvas.grid(row=0, column=0, padx=(5, 4), sticky="ew")
+            name_canvas.create_text(4, ROW_H // 2, text=name, anchor="w",
+                                    font=name_font, fill=canvas_fg)
+            name_canvas.configure(scrollregion=(0, 0, virtual_w, ROW_H))
+            # Wire canvas to the persistent scrollbar so its thumb reflects position
+            name_canvas.configure(xscrollcommand=self.hscroll_jobs.set)
+            self._name_canvases.append(name_canvas)
+
+            # Right: Time estimate with colour coding (fixed width)
             color = "#10B981" if "h" in time_str or "m" in time_str else "gray"
-            ctk.CTkLabel(row, text=time_str, font=self.font_mono, text_color=color, anchor="e").pack(side="right", padx=5)
+            time_label = ctk.CTkLabel(row, text=time_str, font=self.font_mono,
+                                      text_color=color, anchor="e", width=50)
+            time_label.grid(row=0, column=1, padx=(0, 5), sticky="e")
+
+        # Initialise scrollbar thumb to reflect the visible fraction
+        visible_frac = min(NAME_COL_W / virtual_w, 1.0)
+        self.hscroll_jobs.set(0.0, visible_frac)
     
     def run_loop(self):
         """
@@ -1001,7 +1118,7 @@ class AbaqusWatcherApp(ctk.CTk):
         EXECUTION MODEL:
         - Spawned by toggle_watcher() with daemon=True
         - Exits when self.stop_event.is_set() == True
-        - 3-second poll interval (balances responsiveness vs. CPU usage)
+        - 8-second poll interval (balances responsiveness vs. CPU usage)
         - All exceptions caught to prevent thread death
         
         RESPONSIBILITIES:
@@ -1160,7 +1277,7 @@ class AbaqusWatcherApp(ctk.CTk):
                         self.log(f"Heartbeat: {job}")
 
                 # Wait before next iteration to avoid excessive CPU usage
-                time.sleep(3)  # Poll every 3 seconds
+                time.sleep(8)  # Poll every 8 seconds
             except Exception as e:
                 self.log(f"Loop Err: {e}")
                 time.sleep(5)  # Longer delay on error to avoid spam
@@ -1175,9 +1292,9 @@ class AbaqusWatcherApp(ctk.CTk):
         - sendPhoto: Image with caption (for convergence plots)
         
         MARKDOWN SUPPORT:
-        - Uses parse_mode="Markdown" for text formatting
-        - Supports: **bold**, *italic*, `code`, [links](url)
-        - Special chars must be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
+        - Uses parse_mode="Markdown" (Telegram Bot API v1 Markdown)
+        - Supports: **bold**, _italic_, `inline code`, [text](url)
+        - Note: v1 Markdown is permissive; only _ * ` [ need escaping inside formatted spans
         
         MESSAGE STRUCTURE:
         - Format: "[icon] [text]" for text messages
@@ -1191,7 +1308,7 @@ class AbaqusWatcherApp(ctk.CTk):
         
         ERROR HANDLING:
         - All exceptions caught and logged (prevents watcher thread crash)
-        - Network timeouts: 10 seconds (prevents indefinite hanging)
+        - Network timeouts: 10 s for text messages, 20 s for photo uploads
         - File cleanup: Deletes temporary plot files after sending
         - Logs only exception type (avoids verbose stack traces)
         
@@ -1264,7 +1381,7 @@ class AbaqusWatcherApp(ctk.CTk):
         
         3. Control Command:
            - /kill <job_name>: Terminate a running job
-           Response: Instructions for manual termination (no subprocess used)
+           Response: Sends `abaqus terminate job=<name>` via subprocess, then confirms via Telegram
         
         SECURITY MEASURES:
         - Chat ID Verification: Only responds to configured chat
@@ -1426,7 +1543,7 @@ class AbaqusWatcherApp(ctk.CTk):
         WHERE THIS IS ENFORCED:
         - check_telegram(): Before processing /status and /kill commands
         - File operations: Before constructing paths like f"{job}.sta"
-        - Subprocess calls: Before any potential command execution (future-proofing)
+        - Subprocess calls: Before passing the name to `abaqus terminate job=<name>`
         
         Args:
             job: Job name from Telegram command or UI input
@@ -1519,16 +1636,22 @@ class AbaqusWatcherApp(ctk.CTk):
     # --- FILE PARSING HELPERS ---
     def get_status(self, d, j):
         """
-        Determines the final status of a finished job by parsing the .sta file.
-        
-        Searches the file tail for ABAQUS completion keywords.
-        
+        Determine the final status of a finished job by scanning the .sta file tail
+        for ABAQUS completion keywords.
+
+        Keyword mapping:
+        - ``"COMPLETED SUCCESSFULLY"`` → ("SUCCESS", "✅", "Converged")
+        - ``"ERROR"``                  → ("ABORTED", "🚨", "Check .msg")
+        - Neither found               → ("TERMINATED", "⚠️", "Stopped")
+          (e.g., job killed via Ctrl-C or OS signal before writing a final status line)
+        - .sta file absent            → ("FINISHED", "⚠️", "No Data")
+
         Args:
-            d: Watch directory path
-            j: Job name (without extension)
-            
+            d: Watch directory containing the .sta file.
+            j: Job name without extension.
+
         Returns:
-            tuple: (status_string, emoji_icon, detail_message)
+            tuple[str, str, str]: (status_label, emoji_icon, detail_message)
         """
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): 
@@ -1584,8 +1707,9 @@ class AbaqusWatcherApp(ctk.CTk):
         ALGORITHM OVERVIEW:
         1. Find latest "ODB Field Frame Number X of Y" in tail
         2. Extract current frame (X) and total frames (Y)
-        3. Find latest CPU TIME (HH:MM:SS) from increment data
-        4. Convert CPU time to seconds
+        3. Find latest cumulative CPU time (HH:MM:SS) logged by the solver in the .sta file
+           (ABAQUS reports cumulative wall-clock CPU time at each increment)
+        4. Convert cumulative CPU time to total elapsed seconds
         5. Calculate: seconds_per_frame = elapsed / current_frame
         6. Extrapolate: remaining = (total - current) * seconds_per_frame
         
@@ -1706,7 +1830,28 @@ class AbaqusWatcherApp(ctk.CTk):
             return None, 0, 0
     
     def get_details(self, d, j, cached_start=""):
-        """Parses the .sta file for detailed progress using cached start time."""
+        """
+        Build a multi-line progress summary for a running or finished job.
+
+        Reads the last ``MAX_TAIL_BYTES`` of the .sta file once, then makes a
+        single backwards pass to extract:
+        - The latest increment line (step time, dt, kinetic energy, total energy)
+        - The latest ODB frame counter (current / total)
+        - The current STEP number
+
+        The completion estimate from ``_estimate_completion`` is appended when
+        available.
+
+        Args:
+            d: Watch directory containing the .sta file.
+            j: Job name without extension.
+            cached_start: Pre-formatted start-date string from
+                          ``_get_start_date_once`` (avoids re-reading header).
+
+        Returns:
+            str: Formatted status string ready for Telegram or the UI, or
+                 "Waiting..." / "Error" on failure.
+        """
         sta = os.path.join(d, j + ".sta")
         if not os.path.exists(sta): return "Waiting..."
         try:
@@ -1741,8 +1886,24 @@ class AbaqusWatcherApp(ctk.CTk):
     
     def get_full_summary(self, watch_dir, filter_mode="ALL"):
         """
-        Scans directory for .sta files and summarizes based on filter.
-        filter_mode: "ALL", "RUNNING", "COMPLETED", "ERROR"
+        Scan the watch directory for .sta files and build a multi-job Telegram summary.
+
+        Reads the tail of each .sta file to classify its status, then filters
+        the results by ``filter_mode``.  A .lck file present alongside a .sta
+        file indicates the job is still running.
+
+        Results are sorted by .sta modification time (newest first) and capped at
+        ``MAX_SUMMARY_JOBS`` entries to stay within Telegram's 4 096-character
+        message limit.
+
+        Args:
+            watch_dir: Directory to scan for .sta files.
+            filter_mode: One of ``"ALL"``, ``"RUNNING"``, ``"COMPLETED"``, or
+                         ``"ERROR"``.
+
+        Returns:
+            str: Newline-separated Markdown-formatted job entries, or a
+                 descriptive message if no matching jobs are found.
         """
         files = [f for f in os.listdir(watch_dir) if f.endswith('.sta')]
         if not files: return "No Abaqus jobs found."
