@@ -140,7 +140,7 @@ GITHUB_REPO = "daadaan/ABAQUS_Watcher_GUI"
 
 # Semantic Version String (format: "MAJOR.MINOR.PATCH")
 # CRITICAL: Must match Git release tags (without 'v' prefix) for update detection
-CURRENT_VERSION = "2.0.2"
+CURRENT_VERSION = "2.2.0"
 
 # Configuration File Location Strategy
 # WHY %LOCALAPPDATA%:
@@ -1212,7 +1212,11 @@ class AbaqusWatcherApp(ctk.CTk):
                     # Read .sta file tail to estimate completion time
                     sta = os.path.join(watch_dir, job + ".sta")
                     tail = self._read_tail_text(sta)
-                    est_str, _, _ = self._estimate_completion(tail)
+                    solver_type = self._get_solver_type(sta)
+                    if solver_type == "STANDARD":
+                        est_str, _, _ = self._estimate_completion_standard(watch_dir, job, tail)
+                    else:
+                        est_str, _, _ = self._estimate_completion(tail)
                     
                     # Extract just the "Xh Ym" part from the full estimate message
                     display_time = "Calculating..."
@@ -1699,8 +1703,158 @@ class AbaqusWatcherApp(ctk.CTk):
         except: 
             pass
         return ""
+
+    def _get_start_datetime(self, d: str, j: str) -> Optional[datetime]:
+        """
+        Parse the job start date/time from the .sta file header as a ``datetime``
+        object for wall-clock elapsed-time calculations.
+
+        Uses the same scan logic as ``_get_start_date_once`` but returns a
+        ``datetime`` instead of a formatted string.  Returns ``None`` if the
+        header line cannot be found or parsed.
+
+        Args:
+            d: Watch directory containing the .sta file.
+            j: Job name without extension.
+
+        Returns:
+            datetime | None: Parsed start datetime in local time, or None.
+        """
+        sta = os.path.join(d, j + ".sta")
+        if not os.path.exists(sta):
+            return None
+        try:
+            with open(sta, 'r', encoding='utf-8', errors='ignore') as f:
+                for _ in range(HEADER_SCAN_LINES):
+                    line = f.readline()
+                    if "DATE" in line and "TIME" in line:
+                        p = line.split("DATE")[-1].split("TIME")
+                        date_str = p[0].strip()
+                        time_str = p[1].strip()
+                        return datetime.strptime(f"{date_str} {time_str}", "%d-%b-%Y %H:%M:%S")
+        except Exception:
+            pass
+        return None
+
+    def _get_solver_type(self, sta_path):
+        """Detect solver type from the first line of a .sta file."""
+        if not os.path.exists(sta_path):
+            return "UNKNOWN"
+        try:
+            with open(sta_path, 'r', encoding='utf-8', errors='ignore') as f:
+                first_line = f.readline().strip().lower()
+            if "abaqus/standard" in first_line:
+                return "STANDARD"
+            if "abaqus/explicit" in first_line:
+                return "EXPLICIT"
+        except Exception:
+            pass
+        return "UNKNOWN"
+
+    def _parse_standard_sta_progress(self, tail_text):
+        """
+        Parse the latest Abaqus/Standard summary row from .sta tail text.
+
+        Row format:
+            STEP INC ATT SEVERE EQUIL TOTAL TOTAL_TIME STEP_TIME INC_OF_TIME
+        """
+        try:
+            for line in reversed(tail_text.splitlines()):
+                parts = line.split()
+                if len(parts) < 9:
+                    continue
+                if not (parts[0].isdigit() and parts[1].isdigit()):
+                    continue
+                if not re.fullmatch(r"\d+U?", parts[2]):
+                    continue
+                if not (parts[3].isdigit() and parts[4].isdigit() and parts[5].isdigit()):
+                    continue
+
+                return {
+                    "step": parts[0],
+                    "increment": parts[1],
+                    "attempt": parts[2],
+                    "severe": parts[3],
+                    "equil": parts[4],
+                    "total_iters": parts[5],
+                    "total_time": parts[6],
+                    "step_time": parts[7],
+                    "inc_time": parts[8],
+                }
+        except Exception:
+            pass
+        return None
+
+    def _estimate_completion_standard(self, d, j, sta_tail_text="", actual_elapsed_sec: Optional[float] = None):
+        """
+        Estimate remaining duration for Abaqus/Standard jobs.
+
+        Uses latest step progress from .sta and fraction-of-step from .msg:
+            total_step_time ~= step_time_completed / fraction_of_step_completed
+            remaining ~= total_step_time - step_time_completed
+
+        When ``actual_elapsed_sec`` is provided (wall-clock seconds since job
+        start) the displayed total is ``actual_elapsed_sec + remaining`` so
+        the number reflects real-world duration rather than simulation step time.
+        """
+        msg_path = os.path.join(d, j + ".msg")
+        if not os.path.exists(msg_path):
+            return None, 0, 0
+
+        try:
+            current_step_time = 0.0
+
+            # Prefer step time from .sta summary row
+            if sta_tail_text:
+                standard_row = self._parse_standard_sta_progress(sta_tail_text)
+                if standard_row:
+                    try:
+                        current_step_time = float(standard_row["step_time"])
+                    except Exception:
+                        current_step_time = 0.0
+
+            msg_tail = self._read_tail_text(msg_path)
+
+            fraction_matches = list(re.finditer(
+                r"FRACTION OF STEP COMPLETED\s+([+\-]?\d+(?:\.\d+)?(?:[Ee][+\-]?\d+)?)",
+                msg_tail
+            ))
+            if not fraction_matches:
+                return None, 0, 0
+
+            fraction = float(fraction_matches[-1].group(1))
+            if fraction <= 0:
+                return "Calculating...", 0, 0
+
+            # Fallback / alignment source from .msg
+            step_completed_matches = list(re.finditer(
+                r"STEP TIME COMPLETED\s+([+\-]?\d+(?:\.\d+)?(?:[Ee][+\-]?\d+)?)",
+                msg_tail
+            ))
+            if step_completed_matches:
+                step_completed = float(step_completed_matches[-1].group(1))
+                if step_completed > 0:
+                    current_step_time = step_completed
+
+            if current_step_time <= 0:
+                return None, 0, 0
+
+            total_step_time = current_step_time / fraction
+            remaining = max(total_step_time - current_step_time, 0.0)
+
+            def fmt(sec):
+                hm = int(sec // 60)
+                return f"{hm // 60}h {hm % 60}m"
+
+            # Total display: use actual wall-clock elapsed + remaining when available;
+            # fall back to simulation step-time extrapolation otherwise.
+            total_display = (actual_elapsed_sec + remaining) if actual_elapsed_sec is not None else total_step_time
+            msg = f"⏱️ Left: {fmt(remaining)} (Tot: {fmt(total_display)})"
+            return msg, remaining, total_display
+        except Exception:
+            return None, 0, 0
     
-    def _estimate_completion(self, tail_text):
+    def _estimate_completion(self, tail_text, actual_elapsed_sec: Optional[float] = None):
         """
         Estimates job completion time using linear extrapolation from ODB frame progress.
         
@@ -1815,8 +1969,12 @@ class AbaqusWatcherApp(ctk.CTk):
             seconds_per_frame = elapsed_seconds / current_frame
             remaining_frames = total_frames - current_frame
             remaining_seconds = seconds_per_frame * remaining_frames
-            total_est_seconds = elapsed_seconds + remaining_seconds
-            
+
+            # Total display: use actual wall-clock elapsed + remaining when available;
+            # fall back to CPU-time-based elapsed otherwise.
+            wall_elapsed = actual_elapsed_sec if actual_elapsed_sec is not None else elapsed_seconds
+            total_est_seconds = wall_elapsed + remaining_seconds
+
             # 5. Format Output
             # Helper to format seconds to HH:MM
             def fmt(sec):
@@ -1857,6 +2015,34 @@ class AbaqusWatcherApp(ctk.CTk):
         try:
             start = f"{cached_start}\n" if cached_start else ""
             tail_text = self._read_tail_text(sta) # Read once
+            solver_type = self._get_solver_type(sta)
+
+            # Compute actual wall-clock elapsed since the job started.
+            # Used by both estimation methods so the displayed total reflects
+            # real-world duration: actual_elapsed + projected_remaining.
+            start_dt = self._get_start_datetime(d, j)
+            actual_elapsed_sec: Optional[float] = (
+                (datetime.now() - start_dt).total_seconds() if start_dt else None
+            )
+
+            # Abaqus/Standard path: parse latest summary-row progress from .sta
+            # and estimate completion using .msg fraction-of-step progress.
+            if solver_type == "STANDARD":
+                standard_row = self._parse_standard_sta_progress(tail_text)
+                if not standard_row:
+                    return f"{start}Abaqus/Standard\nWaiting for summary rows..."
+
+                est_msg, _, _ = self._estimate_completion_standard(d, j, tail_text, actual_elapsed_sec)
+                eta = f"\n{est_msg}" if est_msg else ""
+
+                return (
+                    f"{start}Abaqus/Standard | Step {standard_row['step']}\n"
+                    f"Inc: {standard_row['increment']} (Att: {standard_row['attempt']}) | Severe: {standard_row['severe']}\n"
+                    f"Step Time: {standard_row['step_time']} | Δt: {standard_row['inc_time']}\n"
+                    f"Iters (Equil/Total): {standard_row['equil']}/{standard_row['total_iters']}"
+                    f"{eta}"
+                )
+
             tail_lines = tail_text.splitlines()
             
             dat, fra, step = "Reading...", "No Frames", "1"
@@ -1876,7 +2062,7 @@ class AbaqusWatcherApp(ctk.CTk):
                     break
             
             # --- Time Estimate ---
-            est_msg, _, _ = self._estimate_completion(tail_text)
+            est_msg, _, _ = self._estimate_completion(tail_text, actual_elapsed_sec)
             if est_msg:
                 fra += f"\n{est_msg}"
             # -----------------------------------
@@ -1951,7 +2137,11 @@ class AbaqusWatcherApp(ctk.CTk):
 
                 time_est_str = ""
                 if is_running:
-                    est_msg, _, _ = self._estimate_completion(tail)
+                    solver_type = self._get_solver_type(sta)
+                    if solver_type == "STANDARD":
+                        est_msg, _, _ = self._estimate_completion_standard(watch_dir, job, tail)
+                    else:
+                        est_msg, _, _ = self._estimate_completion(tail)
                     if est_msg:
                         # Extract just the "Left" part for the summary to save space
                         # est_msg looks like "⏱️ Left: 4h 20m (Tot: 10h)"
